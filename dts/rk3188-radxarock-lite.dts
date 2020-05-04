@@ -20,7 +20,7 @@
 	compatible = "radxa,rock", "rockchip,rk3188";
 
 	memory {
-		reg = <0x60000000 0x7f000000>;
+		reg = <0x60000000 0x3f000000>;
 	};
 
 	framebuffer {
