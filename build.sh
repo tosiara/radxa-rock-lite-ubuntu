@@ -50,8 +50,8 @@ $maindir/rockchip-mkbootimg/mkbootimg --kernel zImage-dtb --ramdisk initrd.img.g
 if [ ! -d "$maindir/arm-eabi-4.6" ]
 then
 	echo "Download u-boot required toolchain"
-	mkdir arm-eabi-4.6
-	cd arm-eabi-4.6
+	mkdir $maindir/arm-eabi-4.6
+	cd $maindir/arm-eabi-4.6
 	wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-eabi-4.6/+archive/refs/heads/kitkat-release.tar.gz
 	tar xvfz kitkat-release.tar.gz
 fi
