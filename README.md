@@ -55,6 +55,7 @@ sudo chroot /mnt/tmp
 #gpasswd -a ubuntu sudo
 #exit
 ####
+cp $maindir/kernel/modules/lib/modules/* /mnt/temp/lib/modules/ -r
 sudo umount /mnt/tmp/{proc,sys,dev/pts,dev,}
 echo "Done"
 ```
