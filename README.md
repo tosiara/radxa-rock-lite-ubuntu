@@ -53,8 +53,8 @@ sudo chroot /mnt/tmp
 #echo "    iface eth0 inet dhcp" | tee -a /etc/network/interfaces
 #adduser ubuntu
 #gpasswd -a ubuntu sudo
-#exit
 ####
+exit
 cp $maindir/kernel/modules/lib/modules/* /mnt/temp/lib/modules/ -r
 sudo umount /mnt/tmp/{proc,sys,dev/pts,dev,}
 echo "Done"
