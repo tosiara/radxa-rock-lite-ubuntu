@@ -6,6 +6,7 @@ Based on the following links:
 * https://wiki.radxa.com/Rock/Linux_Mainline
 * https://wiki.radxa.com/Rock/U-Boot#For_SD_card
 * https://wiki.radxa.com/Rock/make_sd_image
+* https://github.com/sgjava/ubuntu-mini#create-ubuntu-root-filesystem-mk808-mk802iv-etc
 
 Kernel version: 4.4.221
 Ubuntu version: latest 16.04
@@ -22,7 +23,6 @@ This will build 3 files:
 
 ## Root FS
 
-* https://github.com/sgjava/ubuntu-mini#create-ubuntu-root-filesystem-mk808-mk802iv-etc
 ```
 echo "Make rootfs"
 maindir=`pwd`
