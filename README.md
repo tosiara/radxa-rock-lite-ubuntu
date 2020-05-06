@@ -8,8 +8,10 @@ Based on the following links:
 * https://wiki.radxa.com/Rock/make_sd_image
 * https://github.com/sgjava/ubuntu-mini#create-ubuntu-root-filesystem-mk808-mk802iv-etc
 
-Kernel version: 4.4.221
+Kernel version: 3.18.140
 Ubuntu version: latest 16.04
+
+There is also testing branch for 4.4, but it is currently has no USB and Ethernet support
 
 ## Build
 
