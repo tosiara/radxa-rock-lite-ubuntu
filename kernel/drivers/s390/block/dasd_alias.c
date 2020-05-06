@@ -58,7 +58,7 @@ static struct alias_server *_find_server(struct dasd_uid *uid)
 		    && !strncmp(pos->uid.serial, uid->serial,
 				sizeof(uid->serial)))
 			return pos;
-	}
+	};
 	return NULL;
 }
 
@@ -69,7 +69,7 @@ static struct alias_lcu *_find_lcu(struct alias_server *server,
 	list_for_each_entry(pos, &server->lculist, lcu) {
 		if (pos->uid.ssid == uid->ssid)
 			return pos;
-	}
+	};
 	return NULL;
 }
 
@@ -97,7 +97,7 @@ static struct alias_pav_group *_find_group(struct alias_lcu *lcu,
 		if (pos->uid.base_unit_addr == search_unit_addr &&
 		    !strncmp(pos->uid.vduit, uid->vduit, sizeof(uid->vduit)))
 			return pos;
-	}
+	};
 	return NULL;
 }
 
@@ -396,20 +396,6 @@ suborder_not_supported(struct dasd_ccw_req *cqr)
 	char msg_format;
 	char msg_no;
 
-	/*
-	 * intrc values ENODEV, ENOLINK and EPERM
-	 * will be optained from sleep_on to indicate that no
-	 * IO operation can be started
-	 */
-	if (cqr->intrc == -ENODEV)
-		return 1;
-
-	if (cqr->intrc == -ENOLINK)
-		return 1;
-
-	if (cqr->intrc == -EPERM)
-		return 1;
-
 	sense = dasd_get_sense(&cqr->irb);
 	if (!sense)
 		return 0;
@@ -474,8 +460,12 @@ static int read_unit_address_configuration(struct dasd_device *device,
 	lcu->flags &= ~NEED_UAC_UPDATE;
 	spin_unlock_irqrestore(&lcu->lock, flags);
 
-	rc = dasd_sleep_on(cqr);
-	if (rc && !suborder_not_supported(cqr)) {
+	do {
+		rc = dasd_sleep_on(cqr);
+		if (rc && suborder_not_supported(cqr))
+			return -EOPNOTSUPP;
+	} while (rc && (cqr->retries > 0));
+	if (rc) {
 		spin_lock_irqsave(&lcu->lock, flags);
 		lcu->flags |= NEED_UAC_UPDATE;
 		spin_unlock_irqrestore(&lcu->lock, flags);
@@ -717,8 +707,7 @@ struct dasd_device *dasd_alias_get_start_dev(struct dasd_device *base_device)
 					       struct dasd_device, alias_list);
 	spin_unlock_irqrestore(&lcu->lock, flags);
 	alias_priv = (struct dasd_eckd_private *) alias_device->private;
-	if ((alias_priv->count < private->count) && !alias_device->stopped &&
-	    !test_bit(DASD_FLAG_OFFLINE, &alias_device->flags))
+	if ((alias_priv->count < private->count) && !alias_device->stopped)
 		return alias_device;
 	else
 		return NULL;
@@ -842,11 +831,8 @@ static void flush_all_alias_devices_on_lcu(struct alias_lcu *lcu)
 		 * were waiting for the flush
 		 */
 		if (device == list_first_entry(&active,
-					       struct dasd_device, alias_list)) {
+					       struct dasd_device, alias_list))
 			list_move(&device->alias_list, &lcu->active_devices);
-			private = (struct dasd_eckd_private *) device->private;
-			private->pavgroup = NULL;
-		}
 	}
 	spin_unlock_irqrestore(&lcu->lock, flags);
 }

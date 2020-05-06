@@ -1224,7 +1224,7 @@ static int do_grow(struct inode *inode, u64 size)
 
 	if (gfs2_is_stuffed(ip) &&
 	    (size > (sdp->sd_sb.sb_bsize - sizeof(struct gfs2_dinode)))) {
-		error = gfs2_quota_lock_check(ip, &ap);
+		error = gfs2_quota_lock_check(ip);
 		if (error)
 			return error;
 
@@ -1235,8 +1235,6 @@ static int do_grow(struct inode *inode, u64 size)
 	}
 
 	error = gfs2_trans_begin(sdp, RES_DINODE + RES_STATFS + RES_RG_BIT +
-				 (unstuff &&
-				  gfs2_is_jdata(ip) ? RES_JDATA : 0) +
 				 (sdp->sd_args.ar_quota == GFS2_QUOTA_OFF ?
 				  0 : RES_QUOTA), 0);
 	if (error)

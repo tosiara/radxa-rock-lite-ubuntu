@@ -570,7 +570,6 @@ static int mt_ioctl_trans(unsigned int fd, unsigned int cmd, void __user *argp)
 #define BNEPCONNDEL	_IOW('B', 201, int)
 #define BNEPGETCONNLIST	_IOR('B', 210, int)
 #define BNEPGETCONNINFO	_IOR('B', 211, int)
-#define BNEPGETSUPPFEAT	_IOR('B', 212, int)
 
 #define CMTPCONNADD	_IOW('C', 200, int)
 #define CMTPCONNDEL	_IOW('C', 201, int)
@@ -686,7 +685,7 @@ static int do_i2c_rdwr_ioctl(unsigned int fd, unsigned int cmd,
 
 	if (get_user(nmsgs, &udata->nmsgs))
 		return -EFAULT;
-	if (nmsgs > I2C_RDWR_IOCTL_MAX_MSGS)
+	if (nmsgs > I2C_RDRW_IOCTL_MAX_MSGS)
 		return -EINVAL;
 
 	if (get_user(datap, &udata->msgs))
@@ -811,7 +810,7 @@ static int compat_ioctl_preallocate(struct file *file,
  */
 #define XFORM(i) (((i) ^ ((i) << 27) ^ ((i) << 17)) & 0xffffffff)
 
-#define COMPATIBLE_IOCTL(cmd) XFORM((u32)cmd),
+#define COMPATIBLE_IOCTL(cmd) XFORM(cmd),
 /* ioctl should not be warned about even if it's not implemented.
    Valid reasons to use this:
    - It is implemented with ->compat_ioctl on some device, but programs
@@ -896,7 +895,6 @@ COMPATIBLE_IOCTL(FIGETBSZ)
 /* 'X' - originally XFS but some now in the VFS */
 COMPATIBLE_IOCTL(FIFREEZE)
 COMPATIBLE_IOCTL(FITHAW)
-COMPATIBLE_IOCTL(FITRIM)
 COMPATIBLE_IOCTL(KDGETKEYCODE)
 COMPATIBLE_IOCTL(KDSETKEYCODE)
 COMPATIBLE_IOCTL(KDGKBTYPE)
@@ -1016,6 +1014,9 @@ COMPATIBLE_IOCTL(PPPIOCDISCONN)
 COMPATIBLE_IOCTL(PPPIOCATTCHAN)
 COMPATIBLE_IOCTL(PPPIOCGCHAN)
 COMPATIBLE_IOCTL(PPPIOCGL2TPSTATS)
+/* PPPOX */
+COMPATIBLE_IOCTL(PPPOEIOCSFWD)
+COMPATIBLE_IOCTL(PPPOEIOCDFWD)
 /* ppdev */
 COMPATIBLE_IOCTL(PPSETMODE)
 COMPATIBLE_IOCTL(PPRSTATUS)
@@ -1246,7 +1247,6 @@ COMPATIBLE_IOCTL(BNEPCONNADD)
 COMPATIBLE_IOCTL(BNEPCONNDEL)
 COMPATIBLE_IOCTL(BNEPGETCONNLIST)
 COMPATIBLE_IOCTL(BNEPGETCONNINFO)
-COMPATIBLE_IOCTL(BNEPGETSUPPFEAT)
 COMPATIBLE_IOCTL(CMTPCONNADD)
 COMPATIBLE_IOCTL(CMTPCONNDEL)
 COMPATIBLE_IOCTL(CMTPGETCONNLIST)

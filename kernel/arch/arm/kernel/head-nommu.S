@@ -46,7 +46,7 @@ ENTRY(stext)
 	.arm
 ENTRY(stext)
 
- THUMB(	badr	r9, 1f		)	@ Kernel is always entered in ARM.
+ THUMB(	adr	r9, BSYM(1f)	)	@ Kernel is always entered in ARM.
  THUMB(	bx	r9		)	@ If this is a Thumb-2 kernel,
  THUMB(	.thumb			)	@ switch to Thumb now.
  THUMB(1:			)
@@ -77,11 +77,10 @@ ENTRY(stext)
 	orr	r6, r6, #(1 << MPU_RSR_EN)	@ Set region enabled bit
 	bl	__setup_mpu
 #endif
-
-	badr	lr, 1f				@ return (PIC) address
-	ldr	r12, [r10, #PROCINFO_INITFUNC]
-	add	r12, r12, r10
-	ret	r12
+	adr	lr, BSYM(1f)			@ return (PIC) address
+ ARM(	add	pc, r10, #PROCINFO_INITFUNC	)
+ THUMB(	add	r12, r10, #PROCINFO_INITFUNC	)
+ THUMB(	ret	r12				)
 1:	bl	__after_proc_init
 	b	__mmap_switched
 ENDPROC(stext)
@@ -114,12 +113,12 @@ ENTRY(secondary_startup)
 	bl      __setup_mpu			@ Initialize the MPU
 #endif
 
-	badr	lr, 1f				@ return (PIC) address
-	ldr	r12, [r10, #PROCINFO_INITFUNC]
-	add	r12, r12, r10
-	ret	r12
+	adr	lr, BSYM(1f)			@ return (PIC) address
+ ARM(	add	pc, r10, #PROCINFO_INITFUNC	)
+ THUMB(	add	r12, r10, #PROCINFO_INITFUNC	)
+ THUMB(	ret	r12				)
 1:	bl	__after_proc_init
-	ldr	sp, [r7, #12]			@ set up the stack pointer
+	ldr	sp, [r7, #8]			@ set up the stack pointer
 	mov	fp, #0
 	b	secondary_start_kernel
 ENDPROC(secondary_startup)

@@ -47,10 +47,6 @@
 #define EM_MICROBLAZE	189
 #endif
 
-#ifndef EM_ARCV2
-#define EM_ARCV2	195
-#endif
-
 static int fd_map;	/* File descriptor for file being modified. */
 static int mmap_failed; /* Boolean flag. */
 static void *ehdr_curr; /* current ElfXX_Ehdr *  for resource cleanup */
@@ -285,7 +281,6 @@ do_file(char const *const fname)
 		custom_sort = sort_relative_table;
 		break;
 	case EM_ARCOMPACT:
-	case EM_ARCV2:
 	case EM_ARM:
 	case EM_AARCH64:
 	case EM_MICROBLAZE:

@@ -385,8 +385,6 @@ static void ehrpwm_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 	}
 
 	/* Update shadow register first before modifying active register */
-	ehrpwm_modify(pc->mmio_base, AQSFRC, AQSFRC_RLDCSF_MASK,
-		      AQSFRC_RLDCSF_ZRO);
 	ehrpwm_modify(pc->mmio_base, AQCSFRC, aqcsfrc_mask, aqcsfrc_val);
 	/*
 	 * Changes to immediate action on Action Qualifier. This puts
@@ -411,7 +409,7 @@ static void ehrpwm_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
 {
 	struct ehrpwm_pwm_chip *pc = to_ehrpwm_pwm_chip(chip);
 
-	if (pwm_is_enabled(pwm)) {
+	if (test_bit(PWMF_ENABLED, &pwm->flags)) {
 		dev_warn(chip->dev, "Removing PWM device without disabling\n");
 		pm_runtime_put_sync(chip->dev);
 	}
@@ -569,7 +567,7 @@ static int ehrpwm_pwm_suspend(struct device *dev)
 	for (i = 0; i < pc->chip.npwm; i++) {
 		struct pwm_device *pwm = &pc->chip.pwms[i];
 
-		if (!pwm_is_enabled(pwm))
+		if (!test_bit(PWMF_ENABLED, &pwm->flags))
 			continue;
 
 		/* Disable explicitly if PWM is running */
@@ -586,7 +584,7 @@ static int ehrpwm_pwm_resume(struct device *dev)
 	for (i = 0; i < pc->chip.npwm; i++) {
 		struct pwm_device *pwm = &pc->chip.pwms[i];
 
-		if (!pwm_is_enabled(pwm))
+		if (!test_bit(PWMF_ENABLED, &pwm->flags))
 			continue;
 
 		/* Enable explicitly if PWM was running */
@@ -603,6 +601,7 @@ static SIMPLE_DEV_PM_OPS(ehrpwm_pwm_pm_ops, ehrpwm_pwm_suspend,
 static struct platform_driver ehrpwm_pwm_driver = {
 	.driver = {
 		.name	= "ehrpwm",
+		.owner	= THIS_MODULE,
 		.of_match_table = ehrpwm_of_match,
 		.pm	= &ehrpwm_pwm_pm_ops,
 	},

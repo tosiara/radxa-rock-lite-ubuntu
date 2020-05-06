@@ -132,10 +132,6 @@ ath6kl_usb_alloc_urb_from_pipe(struct ath6kl_usb_pipe *pipe)
 	struct ath6kl_urb_context *urb_context = NULL;
 	unsigned long flags;
 
-	/* bail if this pipe is not initialized */
-	if (!pipe->ar_usb)
-		return NULL;
-
 	spin_lock_irqsave(&pipe->ar_usb->cs_lock, flags);
 	if (!list_empty(&pipe->urb_list_head)) {
 		urb_context =
@@ -153,10 +149,6 @@ static void ath6kl_usb_free_urb_to_pipe(struct ath6kl_usb_pipe *pipe,
 					struct ath6kl_urb_context *urb_context)
 {
 	unsigned long flags;
-
-	/* bail if this pipe is not initialized */
-	if (!pipe->ar_usb)
-		return;
 
 	spin_lock_irqsave(&pipe->ar_usb->cs_lock, flags);
 	pipe->urb_cnt++;
@@ -1201,10 +1193,18 @@ static int ath6kl_usb_pm_resume(struct usb_interface *interface)
 	return 0;
 }
 
+static int ath6kl_usb_pm_reset_resume(struct usb_interface *intf)
+{
+	if (usb_get_intfdata(intf))
+		ath6kl_usb_remove(intf);
+	return 0;
+}
+
 #else
 
 #define ath6kl_usb_pm_suspend NULL
 #define ath6kl_usb_pm_resume NULL
+#define ath6kl_usb_pm_reset_resume NULL
 
 #endif
 
@@ -1222,6 +1222,7 @@ static struct usb_driver ath6kl_usb_driver = {
 	.probe = ath6kl_usb_probe,
 	.suspend = ath6kl_usb_pm_suspend,
 	.resume = ath6kl_usb_pm_resume,
+	.reset_resume = ath6kl_usb_pm_reset_resume,
 	.disconnect = ath6kl_usb_remove,
 	.id_table = ath6kl_usb_ids,
 	.supports_autosuspend = true,

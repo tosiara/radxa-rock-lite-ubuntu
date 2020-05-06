@@ -55,7 +55,6 @@
 
 #include <linux/buffer_head.h>
 #include <linux/init.h>
-#include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/mbcache.h>
 #include <linux/quotaops.h>
@@ -86,8 +85,8 @@
 		printk("\n"); \
 	} while (0)
 #else
-# define ea_idebug(inode, f...)	no_printk(f)
-# define ea_bdebug(bh, f...)	no_printk(f)
+# define ea_idebug(f...)
+# define ea_bdebug(f...)
 #endif
 
 static int ext2_xattr_set2(struct inode *, struct buffer_head *,
@@ -244,7 +243,7 @@ cleanup:
 static int
 ext2_xattr_list(struct dentry *dentry, char *buffer, size_t buffer_size)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	struct buffer_head *bh = NULL;
 	struct ext2_xattr_entry *entry;
 	char *end;
@@ -294,9 +293,10 @@ bad_block:	ext2_error(inode->i_sb, "ext2_xattr_list",
 			ext2_xattr_handler(entry->e_name_index);
 
 		if (handler) {
-			size_t size = handler->list(handler, dentry, buffer,
-						    rest, entry->e_name,
-						    entry->e_name_len);
+			size_t size = handler->list(dentry, buffer, rest,
+						    entry->e_name,
+						    entry->e_name_len,
+						    handler->flags);
 			if (buffer) {
 				if (size > rest) {
 					error = -ERANGE;
@@ -319,7 +319,7 @@ cleanup:
 /*
  * Inode operation listxattr()
  *
- * d_inode(dentry)->i_mutex: don't care
+ * dentry->d_inode->i_mutex: don't care
  */
 ssize_t
 ext2_listxattr(struct dentry *dentry, char *buffer, size_t size)

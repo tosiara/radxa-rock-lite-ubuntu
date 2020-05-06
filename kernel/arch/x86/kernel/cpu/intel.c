@@ -8,13 +8,11 @@
 #include <linux/module.h>
 #include <linux/uaccess.h>
 
-#include <asm/cpufeature.h>
+#include <asm/processor.h>
 #include <asm/pgtable.h>
 #include <asm/msr.h>
 #include <asm/bugs.h>
 #include <asm/cpu.h>
-#include <asm/intel-family.h>
-#include <asm/microcode_intel.h>
 
 #ifdef CONFIG_X86_64
 #include <linux/topology.h>
@@ -26,65 +24,6 @@
 #include <asm/mpspec.h>
 #include <asm/apic.h>
 #endif
-
-/*
- * Early microcode releases for the Spectre v2 mitigation were broken.
- * Information taken from;
- * - https://newsroom.intel.com/wp-content/uploads/sites/11/2018/03/microcode-update-guidance.pdf
- * - https://kb.vmware.com/s/article/52345
- * - Microcode revisions observed in the wild
- * - Release note from 20180108 microcode release
- */
-struct sku_microcode {
-	u8 model;
-	u8 stepping;
-	u32 microcode;
-};
-static const struct sku_microcode spectre_bad_microcodes[] = {
-	{ INTEL_FAM6_KABYLAKE_DESKTOP,	0x0B,	0x80 },
-	{ INTEL_FAM6_KABYLAKE_DESKTOP,	0x0A,	0x80 },
-	{ INTEL_FAM6_KABYLAKE_DESKTOP,	0x09,	0x80 },
-	{ INTEL_FAM6_KABYLAKE_MOBILE,	0x0A,	0x80 },
-	{ INTEL_FAM6_KABYLAKE_MOBILE,	0x09,	0x80 },
-	{ INTEL_FAM6_SKYLAKE_X,		0x03,	0x0100013e },
-	{ INTEL_FAM6_SKYLAKE_X,		0x04,	0x0200003c },
-	{ INTEL_FAM6_BROADWELL_CORE,	0x04,	0x28 },
-	{ INTEL_FAM6_BROADWELL_GT3E,	0x01,	0x1b },
-	{ INTEL_FAM6_BROADWELL_XEON_D,	0x02,	0x14 },
-	{ INTEL_FAM6_BROADWELL_XEON_D,	0x03,	0x07000011 },
-	{ INTEL_FAM6_BROADWELL_X,	0x01,	0x0b000025 },
-	{ INTEL_FAM6_HASWELL_ULT,	0x01,	0x21 },
-	{ INTEL_FAM6_HASWELL_GT3E,	0x01,	0x18 },
-	{ INTEL_FAM6_HASWELL_CORE,	0x03,	0x23 },
-	{ INTEL_FAM6_HASWELL_X,		0x02,	0x3b },
-	{ INTEL_FAM6_HASWELL_X,		0x04,	0x10 },
-	{ INTEL_FAM6_IVYBRIDGE_X,	0x04,	0x42a },
-	/* Observed in the wild */
-	{ INTEL_FAM6_SANDYBRIDGE_X,	0x06,	0x61b },
-	{ INTEL_FAM6_SANDYBRIDGE_X,	0x07,	0x712 },
-};
-
-static bool bad_spectre_microcode(struct cpuinfo_x86 *c)
-{
-	int i;
-
-	/*
-	 * We know that the hypervisor lie to us on the microcode version so
-	 * we may as well hope that it is running the correct version.
-	 */
-	if (cpu_has(c, X86_FEATURE_HYPERVISOR))
-		return false;
-
-	if (c->x86 != 6)
-		return false;
-
-	for (i = 0; i < ARRAY_SIZE(spectre_bad_microcodes); i++) {
-		if (c->x86_model == spectre_bad_microcodes[i].model &&
-		    c->x86_mask == spectre_bad_microcodes[i].stepping)
-			return (c->microcode <= spectre_bad_microcodes[i].microcode);
-	}
-	return false;
-}
 
 static void early_init_intel(struct cpuinfo_x86 *c)
 {
@@ -103,23 +42,13 @@ static void early_init_intel(struct cpuinfo_x86 *c)
 		(c->x86 == 0x6 && c->x86_model >= 0x0e))
 		set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
 
-	if (c->x86 >= 6 && !cpu_has(c, X86_FEATURE_IA64))
-		c->microcode = intel_get_microcode_revision();
+	if (c->x86 >= 6 && !cpu_has(c, X86_FEATURE_IA64)) {
+		unsigned lower_word;
 
-	/* Now if any of them are set, check the blacklist and clear the lot */
-	if ((cpu_has(c, X86_FEATURE_SPEC_CTRL) ||
-	     cpu_has(c, X86_FEATURE_INTEL_STIBP) ||
-	     cpu_has(c, X86_FEATURE_IBRS) || cpu_has(c, X86_FEATURE_IBPB) ||
-	     cpu_has(c, X86_FEATURE_STIBP)) && bad_spectre_microcode(c)) {
-		pr_warn("Intel Spectre v2 broken microcode detected; disabling Speculation Control\n");
-		setup_clear_cpu_cap(X86_FEATURE_IBRS);
-		setup_clear_cpu_cap(X86_FEATURE_IBPB);
-		setup_clear_cpu_cap(X86_FEATURE_STIBP);
-		setup_clear_cpu_cap(X86_FEATURE_SPEC_CTRL);
-		setup_clear_cpu_cap(X86_FEATURE_MSR_SPEC_CTRL);
-		setup_clear_cpu_cap(X86_FEATURE_INTEL_STIBP);
-		setup_clear_cpu_cap(X86_FEATURE_SSBD);
-		setup_clear_cpu_cap(X86_FEATURE_SPEC_CTRL_SSBD);
+		wrmsr(MSR_IA32_UCODE_REV, 0, 0);
+		/* Required by the SDM */
+		sync_core();
+		rdmsr(MSR_IA32_UCODE_REV, lower_word, c->microcode);
 	}
 
 	/*
@@ -168,7 +97,6 @@ static void early_init_intel(struct cpuinfo_x86 *c)
 		switch (c->x86_model) {
 		case 0x27:	/* Penwell */
 		case 0x35:	/* Cloverview */
-		case 0x4a:	/* Merrifield */
 			set_cpu_cap(c, X86_FEATURE_NONSTOP_TSC_S3);
 			break;
 		default:
@@ -443,36 +371,6 @@ static void detect_vmx_virtcap(struct cpuinfo_x86 *c)
 	}
 }
 
-static void init_intel_energy_perf(struct cpuinfo_x86 *c)
-{
-	u64 epb;
-
-	/*
-	 * Initialize MSR_IA32_ENERGY_PERF_BIAS if not already initialized.
-	 * (x86_energy_perf_policy(8) is available to change it at run-time.)
-	 */
-	if (!cpu_has(c, X86_FEATURE_EPB))
-		return;
-
-	rdmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
-	if ((epb & 0xF) != ENERGY_PERF_BIAS_PERFORMANCE)
-		return;
-
-	pr_warn_once("ENERGY_PERF_BIAS: Set to 'normal', was 'performance'\n");
-	pr_warn_once("ENERGY_PERF_BIAS: View and update with x86_energy_perf_policy(8)\n");
-	epb = (epb & ~0xF) | ENERGY_PERF_BIAS_NORMAL;
-	wrmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
-}
-
-static void intel_bsp_resume(struct cpuinfo_x86 *c)
-{
-	/*
-	 * MSR_IA32_ENERGY_PERF_BIAS is lost across suspend/resume,
-	 * so reinitialize it properly like during bootup:
-	 */
-	init_intel_energy_perf(c);
-}
-
 static void init_intel(struct cpuinfo_x86 *c)
 {
 	unsigned int l2 = 0;
@@ -516,8 +414,7 @@ static void init_intel(struct cpuinfo_x86 *c)
 
 	if (cpu_has_xmm2)
 		set_cpu_cap(c, X86_FEATURE_LFENCE_RDTSC);
-
-	if (boot_cpu_has(X86_FEATURE_DS)) {
+	if (cpu_has_ds) {
 		unsigned int l1;
 		rdmsr(MSR_IA32_MISC_ENABLE, l1, l2);
 		if (!(l1 & (1<<11)))
@@ -581,12 +478,23 @@ static void init_intel(struct cpuinfo_x86 *c)
 	if (cpu_has(c, X86_FEATURE_VMX))
 		detect_vmx_virtcap(c);
 
-	init_intel_energy_perf(c);
+	/*
+	 * Initialize MSR_IA32_ENERGY_PERF_BIAS if BIOS did not.
+	 * x86_energy_perf_policy(8) is available to change it at run-time
+	 */
+	if (cpu_has(c, X86_FEATURE_EPB)) {
+		u64 epb;
 
-	if (tsx_ctrl_state == TSX_CTRL_ENABLE)
-		tsx_enable();
-	if (tsx_ctrl_state == TSX_CTRL_DISABLE)
-		tsx_disable();
+		rdmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
+		if ((epb & 0xF) == ENERGY_PERF_BIAS_PERFORMANCE) {
+			printk_once(KERN_WARNING "ENERGY_PERF_BIAS:"
+				" Set to 'normal', was 'performance'\n"
+				"ENERGY_PERF_BIAS: View and update with"
+				" x86_energy_perf_policy(8)\n");
+			epb = (epb & ~0xF) | ENERGY_PERF_BIAS_NORMAL;
+			wrmsrl(MSR_IA32_ENERGY_PERF_BIAS, epb);
+		}
+	}
 }
 
 #ifdef CONFIG_X86_32
@@ -653,14 +561,17 @@ static const struct _tlb_table intel_tlb_table[] = {
 	{ 0x5d, TLB_DATA_4K_4M,		256,	" TLB_DATA 4 KByte and 4 MByte pages" },
 	{ 0x61, TLB_INST_4K,		48,	" TLB_INST 4 KByte pages, full associative" },
 	{ 0x63, TLB_DATA_1G,		4,	" TLB_DATA 1 GByte pages, 4-way set associative" },
+	{ 0x6b, TLB_DATA_4K,		256,	" TLB_DATA 4 KByte pages, 8-way associative" },
+	{ 0x6c, TLB_DATA_2M_4M,		128,	" TLB_DATA 2 MByte or 4 MByte pages, 8-way associative" },
+	{ 0x6d, TLB_DATA_1G,		16,	" TLB_DATA 1 GByte pages, fully associative" },
 	{ 0x76, TLB_INST_2M_4M,		8,	" TLB_INST 2-MByte or 4-MByte pages, fully associative" },
 	{ 0xb0, TLB_INST_4K,		128,	" TLB_INST 4 KByte pages, 4-way set associative" },
 	{ 0xb1, TLB_INST_2M_4M,		4,	" TLB_INST 2M pages, 4-way, 8 entries or 4M pages, 4-way entries" },
 	{ 0xb2, TLB_INST_4K,		64,	" TLB_INST 4KByte pages, 4-way set associative" },
 	{ 0xb3, TLB_DATA_4K,		128,	" TLB_DATA 4 KByte pages, 4-way set associative" },
 	{ 0xb4, TLB_DATA_4K,		256,	" TLB_DATA 4 KByte pages, 4-way associative" },
-	{ 0xb5, TLB_INST_4K,		64,	" TLB_INST 4 KByte pages, 8-way set associative" },
-	{ 0xb6, TLB_INST_4K,		128,	" TLB_INST 4 KByte pages, 8-way set associative" },
+	{ 0xb5, TLB_INST_4K,		64,	" TLB_INST 4 KByte pages, 8-way set ssociative" },
+	{ 0xb6, TLB_INST_4K,		128,	" TLB_INST 4 KByte pages, 8-way set ssociative" },
 	{ 0xba, TLB_DATA_4K,		64,	" TLB_DATA 4 KByte pages, 4-way associative" },
 	{ 0xc0, TLB_DATA_4K_4M,		8,	" TLB_DATA 4 KByte and 4 MByte pages, 4-way associative" },
 	{ 0xc1, STLB_4K_2M,		1024,	" STLB 4 KByte and 2 MByte pages, 8-way associative" },
@@ -841,7 +752,6 @@ static const struct cpu_dev intel_cpu_dev = {
 	.c_detect_tlb	= intel_detect_tlb,
 	.c_early_init   = early_init_intel,
 	.c_init		= init_intel,
-	.c_bsp_resume	= intel_bsp_resume,
 	.c_x86_vendor	= X86_VENDOR_INTEL,
 };
 

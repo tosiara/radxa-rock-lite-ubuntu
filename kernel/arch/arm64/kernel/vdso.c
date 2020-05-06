@@ -36,7 +36,7 @@
 #include <asm/vdso.h>
 #include <asm/vdso_datapage.h>
 
-extern char vdso_start[], vdso_end[];
+extern char vdso_start, vdso_end;
 static unsigned long vdso_pages;
 static struct page **vdso_pagelist;
 
@@ -115,14 +115,14 @@ static int __init vdso_init(void)
 {
 	int i;
 
-	if (memcmp(vdso_start, "\177ELF", 4)) {
+	if (memcmp(&vdso_start, "\177ELF", 4)) {
 		pr_err("vDSO is not a valid ELF object!\n");
 		return -EINVAL;
 	}
 
-	vdso_pages = (vdso_end - vdso_start) >> PAGE_SHIFT;
+	vdso_pages = (&vdso_end - &vdso_start) >> PAGE_SHIFT;
 	pr_info("vdso: %ld pages (%ld code @ %p, %ld data @ %p)\n",
-		vdso_pages + 1, vdso_pages, vdso_start, 1L, vdso_data);
+		vdso_pages + 1, vdso_pages, &vdso_start, 1L, vdso_data);
 
 	/* Allocate the vDSO pagelist, plus a page for the data. */
 	vdso_pagelist = kcalloc(vdso_pages + 1, sizeof(struct page *),
@@ -135,7 +135,7 @@ static int __init vdso_init(void)
 
 	/* Grab the vDSO code pages. */
 	for (i = 0; i < vdso_pages; i++)
-		vdso_pagelist[i + 1] = virt_to_page(vdso_start + i * PAGE_SIZE);
+		vdso_pagelist[i + 1] = virt_to_page(&vdso_start + i * PAGE_SIZE);
 
 	/* Populate the special mapping structures */
 	vdso_spec[0] = (struct vm_special_mapping) {
@@ -199,24 +199,25 @@ up_fail:
  */
 void update_vsyscall(struct timekeeper *tk)
 {
-	u32 use_syscall = strcmp(tk->tkr_mono.clock->name, "arch_sys_counter");
+	struct timespec xtime_coarse;
+	u32 use_syscall = strcmp(tk->tkr.clock->name, "arch_sys_counter");
 
 	++vdso_data->tb_seq_count;
 	smp_wmb();
 
+	xtime_coarse = __current_kernel_time();
 	vdso_data->use_syscall			= use_syscall;
-	vdso_data->xtime_coarse_sec		= tk->xtime_sec;
-	vdso_data->xtime_coarse_nsec		= tk->tkr_mono.xtime_nsec >>
-							tk->tkr_mono.shift;
+	vdso_data->xtime_coarse_sec		= xtime_coarse.tv_sec;
+	vdso_data->xtime_coarse_nsec		= xtime_coarse.tv_nsec;
 	vdso_data->wtm_clock_sec		= tk->wall_to_monotonic.tv_sec;
 	vdso_data->wtm_clock_nsec		= tk->wall_to_monotonic.tv_nsec;
 
 	if (!use_syscall) {
-		vdso_data->cs_cycle_last	= tk->tkr_mono.cycle_last;
+		vdso_data->cs_cycle_last	= tk->tkr.cycle_last;
 		vdso_data->xtime_clock_sec	= tk->xtime_sec;
-		vdso_data->xtime_clock_nsec	= tk->tkr_mono.xtime_nsec;
-		vdso_data->cs_mult		= tk->tkr_mono.mult;
-		vdso_data->cs_shift		= tk->tkr_mono.shift;
+		vdso_data->xtime_clock_nsec	= tk->tkr.xtime_nsec;
+		vdso_data->cs_mult		= tk->tkr.mult;
+		vdso_data->cs_shift		= tk->tkr.shift;
 	}
 
 	smp_wmb();

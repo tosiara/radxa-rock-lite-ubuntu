@@ -257,16 +257,6 @@ struct crypto_alg *crypto_alg_mod_lookup(const char *name, u32 type, u32 mask)
 		mask |= CRYPTO_ALG_TESTED;
 	}
 
-	/*
-	 * If the internal flag is set for a cipher, require a caller to
-	 * to invoke the cipher with the internal flag to use that cipher.
-	 * Also, if a caller wants to allocate a cipher that may or may
-	 * not be an internal cipher, use type | CRYPTO_ALG_INTERNAL and
-	 * !(mask & CRYPTO_ALG_INTERNAL).
-	 */
-	if (!((type | mask) & CRYPTO_ALG_INTERNAL))
-		mask |= CRYPTO_ALG_INTERNAL;
-
 	larval = crypto_larval_lookup(name, type, mask);
 	if (IS_ERR(larval) || !crypto_is_larval(larval))
 		return larval;
@@ -355,12 +345,13 @@ static unsigned int crypto_ctxsize(struct crypto_alg *alg, u32 type, u32 mask)
 	return len;
 }
 
-static void crypto_shoot_alg(struct crypto_alg *alg)
+void crypto_shoot_alg(struct crypto_alg *alg)
 {
 	down_write(&crypto_alg_sem);
 	alg->cra_flags |= CRYPTO_ALG_DYING;
 	up_write(&crypto_alg_sem);
 }
+EXPORT_SYMBOL_GPL(crypto_shoot_alg);
 
 struct crypto_tfm *__crypto_alloc_tfm(struct crypto_alg *alg, u32 type,
 				      u32 mask)

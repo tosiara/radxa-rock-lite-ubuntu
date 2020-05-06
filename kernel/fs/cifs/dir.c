@@ -163,7 +163,7 @@ cifs_bp_rename_retry:
 
 		cifs_dbg(FYI, "using cifs_sb prepath <%s>\n", cifs_sb->prepath);
 		memcpy(full_path+dfsplen+1, cifs_sb->prepath, pplen-1);
-		full_path[dfsplen] = dirsep;
+		full_path[dfsplen] = '\\';
 		for (i = 0; i < pplen-1; i++)
 			if (full_path[dfsplen+1+i] == '/')
 				full_path[dfsplen+1+i] = CIFS_DIR_SEP(cifs_sb);
@@ -661,7 +661,8 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 		}
 		rc = CIFSSMBUnixSetPathInfo(xid, tcon, full_path, &args,
 					    cifs_sb->local_nls,
-					    cifs_remap(cifs_sb));
+					    cifs_sb->mnt_cifs_flags &
+						CIFS_MOUNT_MAP_SPECIAL_CHR);
 		if (rc)
 			goto mknod_out;
 
@@ -786,13 +787,13 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry,
 		goto lookup_out;
 	}
 
-	if (d_really_is_positive(direntry)) {
+	if (direntry->d_inode != NULL) {
 		cifs_dbg(FYI, "non-NULL inode in lookup\n");
 	} else {
 		cifs_dbg(FYI, "NULL inode in lookup\n");
 	}
 	cifs_dbg(FYI, "Full path: %s inode = 0x%p\n",
-		 full_path, d_inode(direntry));
+		 full_path, direntry->d_inode);
 
 	if (pTcon->unix_ext) {
 		rc = cifs_get_inode_info_unix(&newInode, full_path,
@@ -830,16 +831,10 @@ lookup_out:
 static int
 cifs_d_revalidate(struct dentry *direntry, unsigned int flags)
 {
-	struct inode *inode;
-
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;
 
-	if (d_really_is_positive(direntry)) {
-		inode = d_inode(direntry);
-		if ((flags & LOOKUP_REVAL) && !CIFS_CACHE_READ(CIFS_I(inode)))
-			CIFS_I(inode)->time = 0; /* force reval */
-
+	if (direntry->d_inode) {
 		if (cifs_revalidate_dentry(direntry))
 			return 0;
 		else {
@@ -850,7 +845,7 @@ cifs_d_revalidate(struct dentry *direntry, unsigned int flags)
 			 * attributes will have been updated by
 			 * cifs_revalidate_dentry().
 			 */
-			if (IS_AUTOMOUNT(inode) &&
+			if (IS_AUTOMOUNT(direntry->d_inode) &&
 			   !(direntry->d_flags & DCACHE_NEED_AUTOMOUNT)) {
 				spin_lock(&direntry->d_lock);
 				direntry->d_flags |= DCACHE_NEED_AUTOMOUNT;

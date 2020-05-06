@@ -157,6 +157,7 @@ static struct platform_zone *zone_data;
 static struct platform_driver platform_driver = {
 	.driver = {
 		   .name = "alienware-wmi",
+		   .owner = THIS_MODULE,
 		   }
 };
 
@@ -463,7 +464,6 @@ static acpi_status alienware_hdmi_command(struct hdmi_args *in_args,
 		if (obj && obj->type == ACPI_TYPE_INTEGER)
 			*out_data = (u32) obj->integer.value;
 	}
-	kfree(output.pointer);
 	return status;
 
 }
@@ -511,7 +511,7 @@ static ssize_t show_hdmi_source(struct device *dev,
 			return scnprintf(buf, PAGE_SIZE,
 					 "input [gpu] unknown\n");
 	}
-	pr_err("alienware-wmi: unknown HDMI source status: %u\n", status);
+	pr_err("alienware-wmi: unknown HDMI source status: %d\n", out_data);
 	return scnprintf(buf, PAGE_SIZE, "input gpu [unknown]\n");
 }
 

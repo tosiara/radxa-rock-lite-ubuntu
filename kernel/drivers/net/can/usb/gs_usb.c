@@ -162,7 +162,7 @@ struct gs_can {
 	struct can_bittiming_const bt_const;
 	unsigned int channel;	/* channel number */
 
-	/* This lock prevents a race condition between xmit and receive. */
+	/* This lock prevents a race condition between xmit and recieve. */
 	spinlock_t tx_ctx_lock;
 	struct gs_tx_context tx_context[GS_MAX_TX_URBS];
 
@@ -276,7 +276,7 @@ static void gs_update_state(struct gs_can *dev, struct can_frame *cf)
 	}
 }
 
-static void gs_usb_receive_bulk_callback(struct urb *urb)
+static void gs_usb_recieve_bulk_callback(struct urb *urb)
 {
 	struct gs_usb *usbcan = urb->context;
 	struct gs_can *dev;
@@ -380,7 +380,7 @@ static void gs_usb_receive_bulk_callback(struct urb *urb)
 			  usb_rcvbulkpipe(usbcan->udev, GSUSB_ENDPOINT_IN),
 			  hf,
 			  sizeof(struct gs_host_frame),
-			  gs_usb_receive_bulk_callback,
+			  gs_usb_recieve_bulk_callback,
 			  usbcan
 			  );
 
@@ -601,7 +601,7 @@ static int gs_can_open(struct net_device *netdev)
 							  GSUSB_ENDPOINT_IN),
 					  buf,
 					  sizeof(struct gs_host_frame),
-					  gs_usb_receive_bulk_callback,
+					  gs_usb_recieve_bulk_callback,
 					  parent);
 			urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
@@ -617,7 +617,6 @@ static int gs_can_open(struct net_device *netdev)
 					   rc);
 
 				usb_unanchor_urb(urb);
-				usb_free_urb(urb);
 				break;
 			}
 
@@ -847,7 +846,7 @@ static int gs_usb_probe(struct usb_interface *intf, const struct usb_device_id *
 			     GS_USB_BREQ_HOST_FORMAT,
 			     USB_DIR_OUT|USB_TYPE_VENDOR|USB_RECIP_INTERFACE,
 			     1,
-			     intf->cur_altsetting->desc.bInterfaceNumber,
+			     intf->altsetting[0].desc.bInterfaceNumber,
 			     hconf,
 			     sizeof(*hconf),
 			     1000);
@@ -870,7 +869,7 @@ static int gs_usb_probe(struct usb_interface *intf, const struct usb_device_id *
 			     GS_USB_BREQ_DEVICE_CONFIG,
 			     USB_DIR_IN|USB_TYPE_VENDOR|USB_RECIP_INTERFACE,
 			     1,
-			     intf->cur_altsetting->desc.bInterfaceNumber,
+			     intf->altsetting[0].desc.bInterfaceNumber,
 			     dconf,
 			     sizeof(*dconf),
 			     1000);
@@ -897,8 +896,6 @@ static int gs_usb_probe(struct usb_interface *intf, const struct usb_device_id *
 	}
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (!dev)
-		return -ENOMEM;
 	init_usb_anchor(&dev->rx_submitted);
 
 	atomic_set(&dev->active_channels, 0);

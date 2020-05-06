@@ -53,7 +53,7 @@ static struct devfreq *find_device_devfreq(struct device *dev)
 {
 	struct devfreq *tmp_devfreq;
 
-	if (IS_ERR_OR_NULL(dev)) {
+	if (unlikely(IS_ERR_OR_NULL(dev))) {
 		pr_err("DEVFREQ: %s: Invalid parameters\n", __func__);
 		return ERR_PTR(-EINVAL);
 	}
@@ -133,7 +133,7 @@ static struct devfreq_governor *find_devfreq_governor(const char *name)
 {
 	struct devfreq_governor *tmp_governor;
 
-	if (IS_ERR_OR_NULL(name)) {
+	if (unlikely(IS_ERR_OR_NULL(name))) {
 		pr_err("DEVFREQ: %s: Invalid parameters\n", __func__);
 		return ERR_PTR(-EINVAL);
 	}
@@ -177,10 +177,10 @@ int update_devfreq(struct devfreq *devfreq)
 		return err;
 
 	/*
-	 * Adjust the frequency with user freq and QoS.
+	 * Adjust the freuqency with user freq and QoS.
 	 *
-	 * List from the highest priority
-	 * max_freq
+	 * List from the highest proiority
+	 * max_freq (probably called by thermal when it's too hot)
 	 * min_freq
 	 */
 
@@ -392,10 +392,16 @@ static int devfreq_notifier_call(struct notifier_block *nb, unsigned long type,
 /**
  * _remove_devfreq() - Remove devfreq from the list and release its resources.
  * @devfreq:	the devfreq struct
+ * @skip:	skip calling device_unregister().
  */
 static void _remove_devfreq(struct devfreq *devfreq)
 {
 	mutex_lock(&devfreq_list_lock);
+	if (IS_ERR(find_device_devfreq(devfreq->dev.parent))) {
+		mutex_unlock(&devfreq_list_lock);
+		dev_warn(&devfreq->dev, "releasing devfreq which doesn't exist\n");
+		return;
+	}
 	list_del(&devfreq->node);
 	mutex_unlock(&devfreq_list_lock);
 
@@ -467,7 +473,6 @@ struct devfreq *devfreq_add_device(struct device *dev,
 	devfreq->dev.parent = dev;
 	devfreq->dev.class = devfreq_class;
 	devfreq->dev.release = devfreq_dev_release;
-	INIT_LIST_HEAD(&devfreq->node);
 	devfreq->profile = profile;
 	strncpy(devfreq->governor_name, governor_name, DEVFREQ_NAME_LEN);
 	devfreq->previous_freq = profile->initial_freq;
@@ -478,7 +483,7 @@ struct devfreq *devfreq_add_device(struct device *dev,
 						devfreq->profile->max_state *
 						devfreq->profile->max_state,
 						GFP_KERNEL);
-	devfreq->time_in_state = devm_kzalloc(dev, sizeof(unsigned long) *
+	devfreq->time_in_state = devm_kzalloc(dev, sizeof(unsigned int) *
 						devfreq->profile->max_state,
 						GFP_KERNEL);
 	devfreq->last_stat_updated = jiffies;
@@ -488,7 +493,7 @@ struct devfreq *devfreq_add_device(struct device *dev,
 	if (err) {
 		put_device(&devfreq->dev);
 		mutex_unlock(&devfreq->lock);
-		goto err_out;
+		goto err_dev;
 	}
 
 	mutex_unlock(&devfreq->lock);
@@ -514,6 +519,7 @@ struct devfreq *devfreq_add_device(struct device *dev,
 err_init:
 	list_del(&devfreq->node);
 	device_unregister(&devfreq->dev);
+err_dev:
 	kfree(devfreq);
 err_out:
 	return ERR_PTR(err);
@@ -790,10 +796,8 @@ static ssize_t governor_store(struct device *dev, struct device_attribute *attr,
 		ret = PTR_ERR(governor);
 		goto out;
 	}
-	if (df->governor == governor) {
-		ret = 0;
+	if (df->governor == governor)
 		goto out;
-	}
 
 	if (df->governor) {
 		ret = df->governor->event_handler(df, DEVFREQ_GOV_STOP, NULL);

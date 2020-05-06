@@ -478,9 +478,7 @@ static void atl1e_mdio_write(struct net_device *netdev, int phy_id,
 {
 	struct atl1e_adapter *adapter = netdev_priv(netdev);
 
-	if (atl1e_write_phy_reg(&adapter->hw,
-				reg_num & MDIO_REG_ADDR_MASK, val))
-		netdev_err(netdev, "write phy register failed\n");
+	atl1e_write_phy_reg(&adapter->hw, reg_num & MDIO_REG_ADDR_MASK, val);
 }
 
 static int atl1e_mii_ioctl(struct net_device *netdev,
@@ -1894,8 +1892,8 @@ static netdev_tx_t atl1e_xmit_frame(struct sk_buff *skb,
 
 	tpd = atl1e_get_tpd(adapter);
 
-	if (skb_vlan_tag_present(skb)) {
-		u16 vlan_tag = skb_vlan_tag_get(skb);
+	if (vlan_tx_tag_present(skb)) {
+		u16 vlan_tag = vlan_tx_tag_get(skb);
 		u16 atl1e_vlan_tag;
 
 		tpd->word3 |= 1 << TPD_INS_VL_TAG_SHIFT;
@@ -2375,8 +2373,9 @@ static int atl1e_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	netif_napi_add(netdev, &adapter->napi, atl1e_clean, 64);
 
-	setup_timer(&adapter->phy_config_timer, atl1e_phy_config,
-		    (unsigned long)adapter);
+	init_timer(&adapter->phy_config_timer);
+	adapter->phy_config_timer.function = atl1e_phy_config;
+	adapter->phy_config_timer.data = (unsigned long) adapter;
 
 	/* get user settings */
 	atl1e_check_options(adapter);

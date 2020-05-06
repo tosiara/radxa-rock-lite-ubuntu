@@ -28,7 +28,7 @@
 #include <linux/omap-dma.h>
 #include <mach/tc.h>
 
-#include "soc.h"
+#include <mach/irqs.h>
 
 #define OMAP1_DMA_BASE			(0xfffed800)
 

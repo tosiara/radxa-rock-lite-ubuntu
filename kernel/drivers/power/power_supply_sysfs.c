@@ -74,9 +74,9 @@ static ssize_t power_supply_show_property(struct device *dev,
 	union power_supply_propval value;
 
 	if (off == POWER_SUPPLY_PROP_TYPE) {
-		value.intval = psy->desc->type;
+		value.intval = psy->type;
 	} else {
-		ret = power_supply_get_property(psy, off, &value);
+		ret = psy->get_property(psy, off, &value);
 
 		if (ret < 0) {
 			if (ret == -ENODATA)
@@ -125,7 +125,7 @@ static ssize_t power_supply_store_property(struct device *dev,
 
 	value.intval = long_val;
 
-	ret = power_supply_set_property(psy, off, &value);
+	ret = psy->set_property(psy, off, &value);
 	if (ret < 0)
 		return ret;
 
@@ -218,12 +218,12 @@ static umode_t power_supply_attr_is_visible(struct kobject *kobj,
 	if (attrno == POWER_SUPPLY_PROP_TYPE)
 		return mode;
 
-	for (i = 0; i < psy->desc->num_properties; i++) {
-		int property = psy->desc->properties[i];
+	for (i = 0; i < psy->num_properties; i++) {
+		int property = psy->properties[i];
 
 		if (property == attrno) {
-			if (psy->desc->property_is_writeable &&
-			    psy->desc->property_is_writeable(psy, property) > 0)
+			if (psy->property_is_writeable &&
+			    psy->property_is_writeable(psy, property) > 0)
 				mode |= S_IWUSR;
 
 			return mode;
@@ -277,12 +277,16 @@ int power_supply_uevent(struct device *dev, struct kobj_uevent_env *env)
 	char *prop_buf;
 	char *attrname;
 
-	if (!psy || !psy->desc) {
+	dev_dbg(dev, "uevent\n");
+
+	if (!psy || !psy->dev) {
 		dev_dbg(dev, "No power supply yet\n");
 		return ret;
 	}
 
-	ret = add_uevent_var(env, "POWER_SUPPLY_NAME=%s", psy->desc->name);
+	dev_dbg(dev, "POWER_SUPPLY_NAME=%s\n", psy->name);
+
+	ret = add_uevent_var(env, "POWER_SUPPLY_NAME=%s", psy->name);
 	if (ret)
 		return ret;
 
@@ -290,11 +294,11 @@ int power_supply_uevent(struct device *dev, struct kobj_uevent_env *env)
 	if (!prop_buf)
 		return -ENOMEM;
 
-	for (j = 0; j < psy->desc->num_properties; j++) {
+	for (j = 0; j < psy->num_properties; j++) {
 		struct device_attribute *attr;
 		char *line;
 
-		attr = &power_supply_attrs[psy->desc->properties[j]];
+		attr = &power_supply_attrs[psy->properties[j]];
 
 		ret = power_supply_show_property(dev, attr, prop_buf);
 		if (ret == -ENODEV || ret == -ENODATA) {
@@ -316,6 +320,8 @@ int power_supply_uevent(struct device *dev, struct kobj_uevent_env *env)
 			ret = -ENOMEM;
 			goto out;
 		}
+
+		dev_dbg(dev, "prop %s=%s\n", attrname, prop_buf);
 
 		ret = add_uevent_var(env, "POWER_SUPPLY_%s=%s", attrname, prop_buf);
 		kfree(attrname);

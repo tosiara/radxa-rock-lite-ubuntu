@@ -39,7 +39,7 @@
  *   fix locking per Peter Chubb's findings
  *
  *  25 Mar 2002 - Matt Domsch <Matt_Domsch@dell.com>
- *   move uuid_unparse() to include/asm-ia64/efi.h:efi_guid_to_str()
+ *   move uuid_unparse() to include/asm-ia64/efi.h:efi_guid_unparse()
  *
  *  12 Feb 2002 - Matt Domsch <Matt_Domsch@dell.com>
  *   use list_for_each_safe when deleting vars.
@@ -128,7 +128,7 @@ efivar_guid_read(struct efivar_entry *entry, char *buf)
 	if (!entry || !buf)
 		return 0;
 
-	efi_guid_to_str(&var->VendorGuid, str);
+	efi_guid_unparse(&var->VendorGuid, str);
 	str += strlen(str);
 	str += sprintf(str, "\n");
 
@@ -139,16 +139,13 @@ static ssize_t
 efivar_attr_read(struct efivar_entry *entry, char *buf)
 {
 	struct efi_variable *var = &entry->var;
-	unsigned long size = sizeof(var->Data);
 	char *str = buf;
-	int ret;
 
 	if (!entry || !buf)
 		return -EINVAL;
 
-	ret = efivar_entry_get(entry, &var->Attributes, &size, var->Data);
-	var->DataSize = size;
-	if (ret)
+	var->DataSize = 1024;
+	if (efivar_entry_get(entry, &var->Attributes, &var->DataSize, var->Data))
 		return -EIO;
 
 	if (var->Attributes & EFI_VARIABLE_NON_VOLATILE)
@@ -175,16 +172,13 @@ static ssize_t
 efivar_size_read(struct efivar_entry *entry, char *buf)
 {
 	struct efi_variable *var = &entry->var;
-	unsigned long size = sizeof(var->Data);
 	char *str = buf;
-	int ret;
 
 	if (!entry || !buf)
 		return -EINVAL;
 
-	ret = efivar_entry_get(entry, &var->Attributes, &size, var->Data);
-	var->DataSize = size;
-	if (ret)
+	var->DataSize = 1024;
+	if (efivar_entry_get(entry, &var->Attributes, &var->DataSize, var->Data))
 		return -EIO;
 
 	str += sprintf(str, "0x%lx\n", var->DataSize);
@@ -195,15 +189,12 @@ static ssize_t
 efivar_data_read(struct efivar_entry *entry, char *buf)
 {
 	struct efi_variable *var = &entry->var;
-	unsigned long size = sizeof(var->Data);
-	int ret;
 
 	if (!entry || !buf)
 		return -EINVAL;
 
-	ret = efivar_entry_get(entry, &var->Attributes, &size, var->Data);
-	var->DataSize = size;
-	if (ret)
+	var->DataSize = 1024;
+	if (efivar_entry_get(entry, &var->Attributes, &var->DataSize, var->Data))
 		return -EIO;
 
 	memcpy(buf, var->Data, var->DataSize);
@@ -272,9 +263,6 @@ efivar_store_raw(struct efivar_entry *entry, const char *buf, size_t count)
 	u8 *data;
 	int err;
 
-	if (!entry || !buf)
-		return -EINVAL;
-
 	if (is_compat()) {
 		struct compat_efi_variable *compat;
 
@@ -326,16 +314,14 @@ efivar_show_raw(struct efivar_entry *entry, char *buf)
 {
 	struct efi_variable *var = &entry->var;
 	struct compat_efi_variable *compat;
-	unsigned long datasize = sizeof(var->Data);
 	size_t size;
-	int ret;
 
 	if (!entry || !buf)
 		return 0;
 
-	ret = efivar_entry_get(entry, &var->Attributes, &datasize, var->Data);
-	var->DataSize = datasize;
-	if (ret)
+	var->DataSize = 1024;
+	if (efivar_entry_get(entry, &entry->var.Attributes,
+			     &entry->var.DataSize, entry->var.Data))
 		return -EIO;
 
 	if (is_compat()) {
@@ -576,8 +562,9 @@ efivar_create_sysfs_entry(struct efivar_entry *new_var)
 
 	/* This is ugly, but necessary to separate one vendor's
 	   private variables from another's.         */
+
 	short_name[utf8_name_size] = '-';
-	efi_guid_to_str(&new_var->var.VendorGuid,
+	efi_guid_unparse(&new_var->var.VendorGuid,
 			 short_name + utf8_name_size + 1);
 
 	new_var->kobj.kset = efivars_kset;

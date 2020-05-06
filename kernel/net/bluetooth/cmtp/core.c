@@ -75,11 +75,10 @@ static void __cmtp_unlink_session(struct cmtp_session *session)
 
 static void __cmtp_copy_session(struct cmtp_session *session, struct cmtp_conninfo *ci)
 {
-	u32 valid_flags = BIT(CMTP_LOOPBACK);
 	memset(ci, 0, sizeof(*ci));
 	bacpy(&ci->bdaddr, &session->bdaddr);
 
-	ci->flags = session->flags & valid_flags;
+	ci->flags = session->flags;
 	ci->state = session->state;
 
 	ci->num = session->num;
@@ -313,7 +312,7 @@ static int cmtp_session(void *arg)
 
 	down_write(&cmtp_session_sem);
 
-	if (!(session->flags & BIT(CMTP_LOOPBACK)))
+	if (!(session->flags & (1 << CMTP_LOOPBACK)))
 		cmtp_detach_device(session);
 
 	fput(session->sock->file);
@@ -329,7 +328,6 @@ static int cmtp_session(void *arg)
 
 int cmtp_add_connection(struct cmtp_connadd_req *req, struct socket *sock)
 {
-	u32 valid_flags = BIT(CMTP_LOOPBACK);
 	struct cmtp_session *session, *s;
 	int i, err;
 
@@ -337,9 +335,6 @@ int cmtp_add_connection(struct cmtp_connadd_req *req, struct socket *sock)
 
 	if (!l2cap_is_socket(sock))
 		return -EBADFD;
-
-	if (req->flags & ~valid_flags)
-		return -EINVAL;
 
 	session = kzalloc(sizeof(struct cmtp_session), GFP_KERNEL);
 	if (!session)
@@ -389,7 +384,7 @@ int cmtp_add_connection(struct cmtp_connadd_req *req, struct socket *sock)
 		goto unlink;
 	}
 
-	if (!(session->flags & BIT(CMTP_LOOPBACK))) {
+	if (!(session->flags & (1 << CMTP_LOOPBACK))) {
 		err = cmtp_attach_device(session);
 		if (err < 0) {
 			atomic_inc(&session->terminate);
@@ -413,14 +408,10 @@ failed:
 
 int cmtp_del_connection(struct cmtp_conndel_req *req)
 {
-	u32 valid_flags = 0;
 	struct cmtp_session *session;
 	int err = 0;
 
 	BT_DBG("");
-
-	if (req->flags & ~valid_flags)
-		return -EINVAL;
 
 	down_read(&cmtp_session_sem);
 

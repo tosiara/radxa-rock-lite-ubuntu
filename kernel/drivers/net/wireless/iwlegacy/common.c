@@ -717,7 +717,7 @@ il_eeprom_init(struct il_priv *il)
 	u32 gp = _il_rd(il, CSR_EEPROM_GP);
 	int sz;
 	int ret;
-	int addr;
+	u16 addr;
 
 	/* allocate eeprom */
 	sz = il->cfg->eeprom_size;
@@ -4634,7 +4634,7 @@ il_mac_remove_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	il->vif = NULL;
 	il->iw_mode = NL80211_IFTYPE_UNSPECIFIED;
 	il_teardown_interface(il, vif);
-	eth_zero_addr(il->bssid);
+	memset(il->bssid, 0, ETH_ALEN);
 
 	D_MAC80211("leave\n");
 	mutex_unlock(&il->mutex);

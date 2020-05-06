@@ -111,11 +111,9 @@ static int vnt_int_report_rate(struct vnt_private *priv, u8 pkt_no, u8 tsr)
 
 	info->status.rates[0].count = tx_retry;
 
-	if (!(tsr & TSR_TMO)) {
+	if (!(tsr & (TSR_TMO | TSR_RETRYTMO))) {
 		info->status.rates[0].idx = idx;
-
-		if (!(info->flags & IEEE80211_TX_CTL_NO_ACK))
-			info->flags |= IEEE80211_TX_STAT_ACK;
+		info->flags |= IEEE80211_TX_STAT_ACK;
 	}
 
 	ieee80211_tx_status_irqsafe(priv->hw, context->skb);
@@ -151,19 +149,10 @@ void vnt_int_process_data(struct vnt_private *priv)
 				priv->op_mode == NL80211_IFTYPE_AP)
 			vnt_schedule_command(priv, WLAN_CMD_BECON_SEND);
 
-		if (int_data->isr0 & ISR_TBTT &&
-		    priv->hw->conf.flags & IEEE80211_CONF_PS) {
-			if (!priv->wake_up_count)
-				priv->wake_up_count =
-					priv->hw->conf.listen_interval;
-
-			if (priv->wake_up_count)
-				--priv->wake_up_count;
-
-			/* Turn on wake up to listen next beacon */
-			if (priv->wake_up_count == 1)
+		if (int_data->isr0 & ISR_TBTT) {
+			if (priv->hw->conf.flags & IEEE80211_CONF_PS)
 				vnt_schedule_command(priv,
-						     WLAN_CMD_TBTT_WAKEUP);
+							WLAN_CMD_TBTT_WAKEUP);
 		}
 		priv->current_tsf = le64_to_cpu(int_data->tsf);
 

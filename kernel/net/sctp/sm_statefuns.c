@@ -177,16 +177,6 @@ sctp_chunk_length_valid(struct sctp_chunk *chunk,
 	return 1;
 }
 
-/* Check for format error in an ABORT chunk */
-static inline bool sctp_err_chunk_valid(struct sctp_chunk *chunk)
-{
-	struct sctp_errhdr *err;
-
-	sctp_walk_errors(err, chunk->chunk_hdr);
-
-	return (void *)err == (void *)chunk->chunk_end;
-}
-
 /**********************************************************
  * These are the state functions for handling chunk events.
  **********************************************************/
@@ -866,7 +856,7 @@ nomem:
 
 /*
  * Respond to a normal COOKIE ACK chunk.
- * We are the side that is asking for an association.
+ * We are the side that is being asked for an association.
  *
  * RFC 2960 5.1 Normal Establishment of an Association
  *
@@ -2169,9 +2159,6 @@ sctp_disposition_t sctp_sf_shutdown_pending_abort(
 		    sctp_bind_addr_state(&asoc->base.bind_addr, &chunk->dest))
 		return sctp_sf_discard_chunk(net, ep, asoc, type, arg, commands);
 
-	if (!sctp_err_chunk_valid(chunk))
-		return sctp_sf_pdiscard(net, ep, asoc, type, arg, commands);
-
 	return __sctp_sf_do_9_1_abort(net, ep, asoc, type, arg, commands);
 }
 
@@ -2213,9 +2200,6 @@ sctp_disposition_t sctp_sf_shutdown_sent_abort(struct net *net,
 	if (SCTP_ADDR_DEL ==
 		    sctp_bind_addr_state(&asoc->base.bind_addr, &chunk->dest))
 		return sctp_sf_discard_chunk(net, ep, asoc, type, arg, commands);
-
-	if (!sctp_err_chunk_valid(chunk))
-		return sctp_sf_pdiscard(net, ep, asoc, type, arg, commands);
 
 	/* Stop the T2-shutdown timer. */
 	sctp_add_cmd_sf(commands, SCTP_CMD_TIMER_STOP,
@@ -2333,7 +2317,7 @@ static sctp_disposition_t sctp_sf_do_5_2_6_stale(struct net *net,
 						 sctp_cmd_seq_t *commands)
 {
 	struct sctp_chunk *chunk = arg;
-	u32 stale;
+	time_t stale;
 	sctp_cookie_preserve_param_t bht;
 	sctp_errhdr_t *err;
 	struct sctp_chunk *reply;
@@ -2482,9 +2466,6 @@ sctp_disposition_t sctp_sf_do_9_1_abort(struct net *net,
 		    sctp_bind_addr_state(&asoc->base.bind_addr, &chunk->dest))
 		return sctp_sf_discard_chunk(net, ep, asoc, type, arg, commands);
 
-	if (!sctp_err_chunk_valid(chunk))
-		return sctp_sf_pdiscard(net, ep, asoc, type, arg, commands);
-
 	return __sctp_sf_do_9_1_abort(net, ep, asoc, type, arg, commands);
 }
 
@@ -2501,9 +2482,15 @@ static sctp_disposition_t __sctp_sf_do_9_1_abort(struct net *net,
 
 	/* See if we have an error cause code in the chunk.  */
 	len = ntohs(chunk->chunk_hdr->length);
+	if (len >= sizeof(struct sctp_chunkhdr) + sizeof(struct sctp_errhdr)) {
 
-	if (len >= sizeof(struct sctp_chunkhdr) + sizeof(struct sctp_errhdr))
+		sctp_errhdr_t *err;
+		sctp_walk_errors(err, chunk->chunk_hdr);
+		if ((void *)err != (void *)chunk->chunk_end)
+			return sctp_sf_pdiscard(net, ep, asoc, type, arg, commands);
+
 		error = ((sctp_errhdr_t *)chunk->skb->data)->cause;
+	}
 
 	sctp_add_cmd_sf(commands, SCTP_CMD_SET_SK_ERR, SCTP_ERROR(ECONNRESET));
 	/* ASSOC_FAILED will DELETE_TCB. */
@@ -5436,8 +5423,7 @@ sctp_disposition_t sctp_sf_do_6_3_3_rtx(struct net *net,
 	SCTP_INC_STATS(net, SCTP_MIB_T3_RTX_EXPIREDS);
 
 	if (asoc->overall_error_count >= asoc->max_retrans) {
-		if (asoc->peer.zero_window_announced &&
-		    asoc->state == SCTP_STATE_SHUTDOWN_PENDING) {
+		if (asoc->state == SCTP_STATE_SHUTDOWN_PENDING) {
 			/*
 			 * We are here likely because the receiver had its rwnd
 			 * closed for a while and we have not been able to

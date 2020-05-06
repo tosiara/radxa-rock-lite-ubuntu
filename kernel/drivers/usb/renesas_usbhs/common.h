@@ -17,7 +17,6 @@
 #ifndef RENESAS_USB_DRIVER_H
 #define RENESAS_USB_DRIVER_H
 
-#include <linux/extcon.h>
 #include <linux/platform_device.h>
 #include <linux/usb/renesas_usbhs.h>
 
@@ -103,10 +102,6 @@ struct usbhs_priv;
 #define DEVADD8		0x00E0
 #define DEVADD9		0x00E2
 #define DEVADDA		0x00E4
-#define D2FIFOSEL	0x00F0	/* for R-Car Gen2 */
-#define D2FIFOCTR	0x00F2	/* for R-Car Gen2 */
-#define D3FIFOSEL	0x00F4	/* for R-Car Gen2 */
-#define D3FIFOCTR	0x00F6	/* for R-Car Gen2 */
 
 /* SYSCFG */
 #define SCKE	(1 << 10)	/* USB Module Clock Enable */
@@ -163,12 +158,11 @@ struct usbhs_priv;
 #define VBSTS	(1 << 7)	/* VBUS_0 and VBUSIN_0 Input Status */
 #define VALID	(1 << 3)	/* USB Request Receive */
 
-#define DVSQ_MASK		(0x7 << 4)	/* Device State */
+#define DVSQ_MASK		(0x3 << 4)	/* Device State */
 #define  POWER_STATE		(0 << 4)
 #define  DEFAULT_STATE		(1 << 4)
 #define  ADDRESS_STATE		(2 << 4)
 #define  CONFIGURATION_STATE	(3 << 4)
-#define  SUSPENDED_STATE	(4 << 4)
 
 #define CTSQ_MASK		(0x7)	/* Control Transfer Stage */
 #define  IDLE_SETUP_STAGE	0	/* Idle stage or setup stage */
@@ -194,7 +188,6 @@ struct usbhs_priv;
 #define TYPE_BULK	(1 << 14)
 #define TYPE_INT	(2 << 14)
 #define TYPE_ISO	(3 << 14)
-#define BFRE		(1 << 10)	/* BRDY Interrupt Operation Spec. */
 #define DBLB		(1 << 9)	/* Double Buffer Mode */
 #define SHTNAK		(1 << 7)	/* Pipe Disable in Transfer End */
 #define DIR_OUT		(1 << 4)	/* Transfer Direction */
@@ -214,12 +207,10 @@ struct usbhs_priv;
 /* DCPCTR */
 #define BSTS		(1 << 15)	/* Buffer Status */
 #define SUREQ		(1 << 14)	/* Sending SETUP Token */
-#define INBUFM		(1 << 14)	/* (PIPEnCTR) Transfer Buffer Monitor */
 #define CSSTS		(1 << 12)	/* CSSTS Status */
 #define	ACLRM		(1 << 9)	/* Buffer Auto-Clear Mode */
 #define SQCLR		(1 << 8)	/* Toggle Bit Clear */
 #define SQSET		(1 << 7)	/* Toggle Bit Set */
-#define SQMON		(1 << 6)	/* Toggle Bit Check */
 #define PBUSY		(1 << 5)	/* Pipe Busy */
 #define PID_MASK	(0x3)		/* Response PID */
 #define  PID_NAK	0
@@ -259,8 +250,6 @@ struct usbhs_priv {
 	struct delayed_work notify_hotplug_work;
 	struct platform_device *pdev;
 
-	struct extcon_dev *edev;
-
 	spinlock_t		lock;
 
 	u32 flags;
@@ -280,8 +269,7 @@ struct usbhs_priv {
 	 */
 	struct usbhs_fifo_info fifo_info;
 
-	struct usb_phy *usb_phy;
-	struct phy *phy;
+	struct usb_phy *phy;
 };
 
 /*
@@ -326,11 +314,6 @@ int usbhs_frame_get_num(struct usbhs_priv *priv);
  */
 int usbhs_set_device_config(struct usbhs_priv *priv, int devnum, u16 upphub,
 			   u16 hubport, u16 speed);
-
-/*
- * interrupt functions
- */
-void usbhs_xxxsts_clear(struct usbhs_priv *priv, u16 sts_reg, u16 bit);
 
 /*
  * data

@@ -118,7 +118,7 @@ static void keyring_publish_name(struct key *keyring)
 		if (!keyring_name_hash[bucket].next)
 			INIT_LIST_HEAD(&keyring_name_hash[bucket]);
 
-		list_add_tail(&keyring->name_link,
+		list_add_tail(&keyring->type_data.link,
 			      &keyring_name_hash[bucket]);
 
 		write_unlock(&keyring_name_lock);
@@ -387,9 +387,9 @@ static void keyring_destroy(struct key *keyring)
 	if (keyring->description) {
 		write_lock(&keyring_name_lock);
 
-		if (keyring->name_link.next != NULL &&
-		    !list_empty(&keyring->name_link))
-			list_del(&keyring->name_link);
+		if (keyring->type_data.link.next != NULL &&
+		    !list_empty(&keyring->type_data.link))
+			list_del(&keyring->type_data.link);
 
 		write_unlock(&keyring_name_lock);
 	}
@@ -407,7 +407,7 @@ static void keyring_describe(const struct key *keyring, struct seq_file *m)
 	else
 		seq_puts(m, "[anon]");
 
-	if (key_is_positive(keyring)) {
+	if (key_is_instantiated(keyring)) {
 		if (keyring->keys.nr_leaves_on_tree != 0)
 			seq_printf(m, ": %lu", keyring->keys.nr_leaves_on_tree);
 		else
@@ -521,8 +521,7 @@ static int keyring_search_iterator(const void *object, void *iterator_data)
 {
 	struct keyring_search_context *ctx = iterator_data;
 	const struct key *key = keyring_ptr_to_key(object);
-	unsigned long kflags = READ_ONCE(key->flags);
-	short state = READ_ONCE(key->state);
+	unsigned long kflags = key->flags;
 
 	kenter("{%d}", key->serial);
 
@@ -566,8 +565,9 @@ static int keyring_search_iterator(const void *object, void *iterator_data)
 
 	if (ctx->flags & KEYRING_SEARCH_DO_STATE_CHECK) {
 		/* we set a different error code if we pass a negative key */
-		if (state < 0) {
-			ctx->result = ERR_PTR(state);
+		if (kflags & (1 << KEY_FLAG_NEGATIVE)) {
+			smp_rmb();
+			ctx->result = ERR_PTR(key->type_data.reject_error);
 			kleave(" = %d [neg]", ctx->skipped_ret);
 			goto skipped;
 		}
@@ -983,7 +983,7 @@ struct key *find_keyring_by_name(const char *name, bool uid_keyring)
 		 * that's readable and that hasn't been revoked */
 		list_for_each_entry(keyring,
 				    &keyring_name_hash[bucket],
-				    name_link
+				    type_data.link
 				    ) {
 			if (!kuid_has_mapping(current_user_ns(), keyring->user->uid))
 				continue;

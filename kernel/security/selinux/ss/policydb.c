@@ -148,11 +148,6 @@ static struct policydb_compat_info policydb_compat[] = {
 		.sym_num	= SYM_NUM,
 		.ocon_num	= OCON_NUM,
 	},
-	{
-		.version	= POLICYDB_VERSION_XPERMS_IOCTL,
-		.sym_num	= SYM_NUM,
-		.ocon_num	= OCON_NUM,
-	},
 };
 
 static struct policydb_compat_info *policydb_lookup_compat(int version)
@@ -266,8 +261,6 @@ static int rangetr_cmp(struct hashtab *h, const void *k1, const void *k2)
 	return v;
 }
 
-static int (*destroy_f[SYM_NUM]) (void *key, void *datum, void *datap);
-
 /*
  * Initialize a policy database structure.
  */
@@ -296,16 +289,12 @@ static int policydb_init(struct policydb *p)
 		goto out;
 
 	p->filename_trans = hashtab_create(filenametr_hash, filenametr_cmp, (1 << 10));
-	if (!p->filename_trans) {
-		rc = -ENOMEM;
+	if (!p->filename_trans)
 		goto out;
-	}
 
 	p->range_tr = hashtab_create(rangetr_hash, rangetr_cmp, 256);
-	if (!p->range_tr) {
-		rc = -ENOMEM;
+	if (!p->range_tr)
 		goto out;
-	}
 
 	ebitmap_init(&p->filename_trans_ttypes);
 	ebitmap_init(&p->policycaps);
@@ -315,10 +304,8 @@ static int policydb_init(struct policydb *p)
 out:
 	hashtab_destroy(p->filename_trans);
 	hashtab_destroy(p->range_tr);
-	for (i = 0; i < SYM_NUM; i++) {
-		hashtab_map(p->symtab[i].table, destroy_f[i], NULL);
+	for (i = 0; i < SYM_NUM; i++)
 		hashtab_destroy(p->symtab[i].table);
-	}
 	return rc;
 }
 

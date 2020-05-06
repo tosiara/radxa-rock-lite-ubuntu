@@ -886,7 +886,6 @@ static int cdrom_is_dvd_rw(struct cdrom_device_info *cdi)
 	switch (cdi->mmc3_profile) {
 	case 0x12:	/* DVD-RAM	*/
 	case 0x1A:	/* DVD+RW	*/
-	case 0x43:	/* BD-RE	*/
 		return 0;
 	default:
 		return 1;
@@ -998,12 +997,6 @@ static void cdrom_count_tracks(struct cdrom_device_info *cdi, tracktype *tracks)
 	tracks->xa = 0;
 	tracks->error = 0;
 	cd_dbg(CD_COUNT_TRACKS, "entering cdrom_count_tracks\n");
-
-	if (!CDROM_CAN(CDC_PLAY_AUDIO)) {
-		tracks->error = CDS_NO_INFO;
-		return;
-	}
-
 	/* Grab the TOC header so we can see how many tracks there are */
 	ret = cdi->ops->audio_ioctl(cdi, CDROMREADTOCHDR, &header);
 	if (ret) {
@@ -1170,8 +1163,7 @@ int cdrom_open(struct cdrom_device_info *cdi, struct block_device *bdev,
 		ret = open_for_data(cdi);
 		if (ret)
 			goto err;
-		if (CDROM_CAN(CDC_GENERIC_PACKET))
-			cdrom_mmc3_profile(cdi);
+		cdrom_mmc3_profile(cdi);
 		if (mode & FMODE_WRITE) {
 			ret = -EROFS;
 			if (cdrom_open_write(cdi))
@@ -2870,9 +2862,6 @@ int cdrom_get_last_written(struct cdrom_device_info *cdi, long *last_written)
 	   it doesn't give enough information or fails. then we return
 	   the toc contents. */
 use_toc:
-	if (!CDROM_CAN(CDC_PLAY_AUDIO))
-		return -ENOSYS;
-
 	toc.cdte_format = CDROM_MSF;
 	toc.cdte_track = CDROM_LEADOUT;
 	if ((ret = cdi->ops->audio_ioctl(cdi, CDROMREADTOCENTRY, &toc)))

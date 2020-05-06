@@ -21,7 +21,6 @@
 #include <stdarg.h>
 
 #include <linux/compat.h>
-#include <linux/efi.h>
 #include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -44,7 +43,6 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/personality.h>
 #include <linux/notifier.h>
-#include <trace/events/power.h>
 
 #include <asm/compat.h>
 #include <asm/cacheflush.h>
@@ -58,6 +56,14 @@
 unsigned long __stack_chk_guard __read_mostly;
 EXPORT_SYMBOL(__stack_chk_guard);
 #endif
+
+void soft_restart(unsigned long addr)
+{
+	setup_mm_for_reboot();
+	cpu_soft_restart(virt_to_phys(cpu_reset), addr);
+	/* Should never get here */
+	BUG();
+}
 
 /*
  * Function pointers to optional machine specific functions
@@ -76,10 +82,8 @@ void arch_cpu_idle(void)
 	 * This should do all the clock switching and wait for interrupt
 	 * tricks
 	 */
-	trace_cpu_idle_rcuidle(1, smp_processor_id());
 	cpu_do_idle();
 	local_irq_enable();
-	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, smp_processor_id());
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -131,7 +135,9 @@ void machine_power_off(void)
 
 /*
  * Restart requires that the secondary CPUs stop performing any activity
- * while the primary CPU resets the system. Systems with multiple CPUs must
+ * while the primary CPU resets the system. Systems with a single CPU can
+ * use soft_restart() as their machine descriptor's .restart hook, since that
+ * will cause the only available CPU to reset. Systems with multiple CPUs must
  * provide a HW restart implementation, to ensure that all CPUs reset at once.
  * This is required so that any code running after reset on the primary CPU
  * doesn't have to co-ordinate with other CPUs to ensure they aren't still
@@ -143,13 +149,6 @@ void machine_restart(char *cmd)
 	/* Disable interrupts first */
 	local_irq_disable();
 	smp_send_stop();
-
-	/*
-	 * UpdateCapsule() depends on the system being reset via
-	 * ResetSystem().
-	 */
-	if (efi_enabled(EFI_RUNTIME_SERVICES))
-		efi_reboot(reboot_mode, NULL);
 
 	/* Now call the architecture specific reboot code. */
 	if (arm_pm_restart)
@@ -236,8 +235,7 @@ void release_thread(struct task_struct *dead_task)
 
 int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
-	if (current->mm)
-		fpsimd_preserve_current_state();
+	fpsimd_preserve_current_state();
 	*dst = *src;
 	return 0;
 }
@@ -248,6 +246,7 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 		unsigned long stk_sz, struct task_struct *p)
 {
 	struct pt_regs *childregs = task_pt_regs(p);
+	unsigned long tls = p->thread.tp_value;
 
 	memset(&p->thread.cpu_context, 0, sizeof(struct cpu_context));
 
@@ -263,29 +262,28 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 	if (likely(!(p->flags & PF_KTHREAD))) {
 		*childregs = *current_pt_regs();
 		childregs->regs[0] = 0;
-
-		/*
-		 * Read the current TLS pointer from tpidr_el0 as it may be
-		 * out-of-sync with the saved value.
-		 */
-		asm("mrs %0, tpidr_el0" : "=r" (*task_user_tls(p)));
-
-		if (stack_start) {
-			if (is_compat_thread(task_thread_info(p)))
+		if (is_compat_thread(task_thread_info(p))) {
+			if (stack_start)
 				childregs->compat_sp = stack_start;
-			/* 16-byte aligned stack mandatory on AArch64 */
-			else if (stack_start & 15)
-				return -EINVAL;
-			else
+		} else {
+			/*
+			 * Read the current TLS pointer from tpidr_el0 as it may be
+			 * out-of-sync with the saved value.
+			 */
+			asm("mrs %0, tpidr_el0" : "=r" (tls));
+			if (stack_start) {
+				/* 16-byte aligned stack mandatory on AArch64 */
+				if (stack_start & 15)
+					return -EINVAL;
 				childregs->sp = stack_start;
+			}
 		}
-
 		/*
 		 * If a TLS pointer was passed to clone (4th argument), use it
 		 * for the new thread.
 		 */
 		if (clone_flags & CLONE_SETTLS)
-			p->thread.tp_value = childregs->regs[3];
+			tls = childregs->regs[3];
 	} else {
 		memset(childregs, 0, sizeof(struct pt_regs));
 		childregs->pstate = PSR_MODE_EL1h;
@@ -294,6 +292,7 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 	}
 	p->thread.cpu_context.pc = (unsigned long)ret_from_fork;
 	p->thread.cpu_context.sp = (unsigned long)childregs;
+	p->thread.tp_value = tls;
 
 	ptrace_hw_copy_thread(p);
 
@@ -304,12 +303,18 @@ static void tls_thread_switch(struct task_struct *next)
 {
 	unsigned long tpidr, tpidrro;
 
-	asm("mrs %0, tpidr_el0" : "=r" (tpidr));
-	*task_user_tls(current) = tpidr;
+	if (!is_compat_task()) {
+		asm("mrs %0, tpidr_el0" : "=r" (tpidr));
+		current->thread.tp_value = tpidr;
+	}
 
-	tpidr = *task_user_tls(next);
-	tpidrro = is_compat_thread(task_thread_info(next)) ?
-		  next->thread.tp_value : 0;
+	if (is_compat_thread(task_thread_info(next))) {
+		tpidr = 0;
+		tpidrro = next->thread.tp_value;
+	} else {
+		tpidr = next->thread.tp_value;
+		tpidrro = 0;
+	}
 
 	asm(
 	"	msr	tpidr_el0, %0\n"

@@ -25,10 +25,7 @@
 #include <linux/string.h>
 #include <linux/thread_info.h>
 
-#include <asm/alternative.h>
-#include <asm/cpufeature.h>
 #include <asm/ptrace.h>
-#include <asm/sysreg.h>
 #include <asm/errno.h>
 #include <asm/memory.h>
 #include <asm/compiler.h>
@@ -67,7 +64,7 @@ static inline void set_fs(mm_segment_t fs)
 	current_thread_info()->addr_limit = fs;
 }
 
-#define segment_eq(a, b)	((a) == (b))
+#define segment_eq(a,b)	((a) == (b))
 
 /*
  * Return 1 if addr < current->addr_limit, 0 otherwise.
@@ -143,8 +140,6 @@ static inline void set_fs(mm_segment_t fs)
 do {									\
 	unsigned long __gu_val;						\
 	__chk_user_ptr(ptr);						\
-	asm(ALTERNATIVE("nop", SET_PSTATE_PAN(0), ARM64_HAS_PAN,	\
-			CONFIG_ARM64_PAN));				\
 	switch (sizeof(*(ptr))) {					\
 	case 1:								\
 		__get_user_asm("ldrb", "%w", __gu_val, (ptr), (err));	\
@@ -161,9 +156,7 @@ do {									\
 	default:							\
 		BUILD_BUG();						\
 	}								\
-	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
-	asm(ALTERNATIVE("nop", SET_PSTATE_PAN(1), ARM64_HAS_PAN,	\
-			CONFIG_ARM64_PAN));				\
+	(x) = (__typeof__(*(ptr)))__gu_val;				\
 } while (0)
 
 #define __get_user(x, ptr)						\
@@ -210,8 +203,6 @@ do {									\
 do {									\
 	__typeof__(*(ptr)) __pu_val = (x);				\
 	__chk_user_ptr(ptr);						\
-	asm(ALTERNATIVE("nop", SET_PSTATE_PAN(0), ARM64_HAS_PAN,	\
-			CONFIG_ARM64_PAN));				\
 	switch (sizeof(*(ptr))) {					\
 	case 1:								\
 		__put_user_asm("strb", "%w", __pu_val, (ptr), (err));	\
@@ -228,8 +219,6 @@ do {									\
 	default:							\
 		BUILD_BUG();						\
 	}								\
-	asm(ALTERNATIVE("nop", SET_PSTATE_PAN(1), ARM64_HAS_PAN,	\
-			CONFIG_ARM64_PAN));				\
 } while (0)
 
 #define __put_user(x, ptr)						\

@@ -227,32 +227,18 @@ int cfg80211_validate_key_settings(struct cfg80211_registered_device *rdev,
 	if (pairwise && !mac_addr)
 		return -EINVAL;
 
-	switch (params->cipher) {
-	case WLAN_CIPHER_SUITE_TKIP:
-	case WLAN_CIPHER_SUITE_CCMP:
-	case WLAN_CIPHER_SUITE_CCMP_256:
-	case WLAN_CIPHER_SUITE_GCMP:
-	case WLAN_CIPHER_SUITE_GCMP_256:
-		/* Disallow pairwise keys with non-zero index unless it's WEP
-		 * or a vendor specific cipher (because current deployments use
-		 * pairwise WEP keys with non-zero indices and for vendor
-		 * specific ciphers this should be validated in the driver or
-		 * hardware level - but 802.11i clearly specifies to use zero)
-		 */
-		if (pairwise && key_idx)
-			return -EINVAL;
-		break;
-	case WLAN_CIPHER_SUITE_AES_CMAC:
-	case WLAN_CIPHER_SUITE_BIP_CMAC_256:
-	case WLAN_CIPHER_SUITE_BIP_GMAC_128:
-	case WLAN_CIPHER_SUITE_BIP_GMAC_256:
-		/* Disallow BIP (group-only) cipher as pairwise cipher */
-		if (pairwise)
-			return -EINVAL;
-		break;
-	default:
-		break;
-	}
+	/*
+	 * Disallow pairwise keys with non-zero index unless it's WEP
+	 * or a vendor specific cipher (because current deployments use
+	 * pairwise WEP keys with non-zero indices and for vendor specific
+	 * ciphers this should be validated in the driver or hardware level
+	 * - but 802.11i clearly specifies to use zero)
+	 */
+	if (pairwise && key_idx &&
+	    ((params->cipher == WLAN_CIPHER_SUITE_TKIP) ||
+	     (params->cipher == WLAN_CIPHER_SUITE_CCMP) ||
+	     (params->cipher == WLAN_CIPHER_SUITE_AES_CMAC)))
+		return -EINVAL;
 
 	switch (params->cipher) {
 	case WLAN_CIPHER_SUITE_WEP40:
@@ -267,36 +253,12 @@ int cfg80211_validate_key_settings(struct cfg80211_registered_device *rdev,
 		if (params->key_len != WLAN_KEY_LEN_CCMP)
 			return -EINVAL;
 		break;
-	case WLAN_CIPHER_SUITE_CCMP_256:
-		if (params->key_len != WLAN_KEY_LEN_CCMP_256)
-			return -EINVAL;
-		break;
-	case WLAN_CIPHER_SUITE_GCMP:
-		if (params->key_len != WLAN_KEY_LEN_GCMP)
-			return -EINVAL;
-		break;
-	case WLAN_CIPHER_SUITE_GCMP_256:
-		if (params->key_len != WLAN_KEY_LEN_GCMP_256)
-			return -EINVAL;
-		break;
 	case WLAN_CIPHER_SUITE_WEP104:
 		if (params->key_len != WLAN_KEY_LEN_WEP104)
 			return -EINVAL;
 		break;
 	case WLAN_CIPHER_SUITE_AES_CMAC:
 		if (params->key_len != WLAN_KEY_LEN_AES_CMAC)
-			return -EINVAL;
-		break;
-	case WLAN_CIPHER_SUITE_BIP_CMAC_256:
-		if (params->key_len != WLAN_KEY_LEN_BIP_CMAC_256)
-			return -EINVAL;
-		break;
-	case WLAN_CIPHER_SUITE_BIP_GMAC_128:
-		if (params->key_len != WLAN_KEY_LEN_BIP_GMAC_128)
-			return -EINVAL;
-		break;
-	case WLAN_CIPHER_SUITE_BIP_GMAC_256:
-		if (params->key_len != WLAN_KEY_LEN_BIP_GMAC_256)
 			return -EINVAL;
 		break;
 	default:
@@ -318,13 +280,7 @@ int cfg80211_validate_key_settings(struct cfg80211_registered_device *rdev,
 			return -EINVAL;
 		case WLAN_CIPHER_SUITE_TKIP:
 		case WLAN_CIPHER_SUITE_CCMP:
-		case WLAN_CIPHER_SUITE_CCMP_256:
-		case WLAN_CIPHER_SUITE_GCMP:
-		case WLAN_CIPHER_SUITE_GCMP_256:
 		case WLAN_CIPHER_SUITE_AES_CMAC:
-		case WLAN_CIPHER_SUITE_BIP_CMAC_256:
-		case WLAN_CIPHER_SUITE_BIP_GMAC_128:
-		case WLAN_CIPHER_SUITE_BIP_GMAC_256:
 			if (params->seq_len != 6)
 				return -EINVAL;
 			break;
@@ -349,12 +305,6 @@ unsigned int __attribute_const__ ieee80211_hdrlen(__le16 fc)
 			if (ieee80211_has_order(fc))
 				hdrlen += IEEE80211_HT_CTL_LEN;
 		}
-		goto out;
-	}
-
-	if (ieee80211_is_mgmt(fc)) {
-		if (ieee80211_has_order(fc))
-			hdrlen += IEEE80211_HT_CTL_LEN;
 		goto out;
 	}
 
@@ -492,8 +442,7 @@ int ieee80211_data_to_8023(struct sk_buff *skb, const u8 *addr,
 		break;
 	case cpu_to_le16(0):
 		if (iftype != NL80211_IFTYPE_ADHOC &&
-		    iftype != NL80211_IFTYPE_STATION &&
-		    iftype != NL80211_IFTYPE_OCB)
+		    iftype != NL80211_IFTYPE_STATION)
 				return -1;
 		break;
 	}
@@ -570,7 +519,6 @@ int ieee80211_data_from_8023(struct sk_buff *skb, const u8 *addr,
 		memcpy(hdr.addr3, skb->data, ETH_ALEN);
 		hdrlen = 24;
 		break;
-	case NL80211_IFTYPE_OCB:
 	case NL80211_IFTYPE_ADHOC:
 		/* DA SA BSSID */
 		memcpy(hdr.addr1, skb->data, ETH_ALEN);
@@ -758,8 +706,8 @@ unsigned int cfg80211_classify8021d(struct sk_buff *skb,
 	if (skb->priority >= 256 && skb->priority <= 263)
 		return skb->priority - 256;
 
-	if (skb_vlan_tag_present(skb)) {
-		vlan_priority = (skb_vlan_tag_get(skb) & VLAN_PRIO_MASK)
+	if (vlan_tx_tag_present(skb)) {
+		vlan_priority = (vlan_tx_tag_get(skb) & VLAN_PRIO_MASK)
 			>> VLAN_PRIO_SHIFT;
 		if (vlan_priority > 0)
 			return vlan_priority;
@@ -887,8 +835,7 @@ void cfg80211_process_wdev_events(struct wireless_dev *wdev)
 		case EVENT_DISCONNECTED:
 			__cfg80211_disconnected(wdev->netdev,
 						ev->dc.ie, ev->dc.ie_len,
-						ev->dc.reason,
-						!ev->dc.locally_generated);
+						ev->dc.reason, true);
 			break;
 		case EVENT_IBSS_JOINED:
 			__cfg80211_ibss_joined(wdev->netdev, ev->ij.bssid,
@@ -945,7 +892,7 @@ int cfg80211_change_iface(struct cfg80211_registered_device *rdev,
 	     ntype == NL80211_IFTYPE_P2P_CLIENT))
 		return -EBUSY;
 
-	if (ntype != otype) {
+	if (ntype != otype && netif_running(dev)) {
 		dev->ieee80211_ptr->use_4addr = false;
 		dev->ieee80211_ptr->mesh_id_up_len = 0;
 		wdev_lock(dev->ieee80211_ptr);
@@ -974,7 +921,6 @@ int cfg80211_change_iface(struct cfg80211_registered_device *rdev,
 		}
 
 		cfg80211_process_rdev_events(rdev);
-		cfg80211_mlme_purge_registrations(dev->ieee80211_ptr);
 	}
 
 	err = rdev_change_virtual_intf(rdev, dev, ntype, flags, params);
@@ -991,7 +937,6 @@ int cfg80211_change_iface(struct cfg80211_registered_device *rdev,
 			if (dev->ieee80211_ptr->use_4addr)
 				break;
 			/* fall through */
-		case NL80211_IFTYPE_OCB:
 		case NL80211_IFTYPE_P2P_CLIENT:
 		case NL80211_IFTYPE_ADHOC:
 			dev->priv_flags |= IFF_DONT_BRIDGE;
@@ -1125,24 +1070,10 @@ static u32 cfg80211_calculate_bitrate_vht(struct rate_info *rate)
 	if (WARN_ON_ONCE(rate->mcs > 9))
 		return 0;
 
-	switch (rate->bw) {
-	case RATE_INFO_BW_160:
-		idx = 3;
-		break;
-	case RATE_INFO_BW_80:
-		idx = 2;
-		break;
-	case RATE_INFO_BW_40:
-		idx = 1;
-		break;
-	case RATE_INFO_BW_5:
-	case RATE_INFO_BW_10:
-	default:
-		WARN_ON(1);
-		/* fall through */
-	case RATE_INFO_BW_20:
-		idx = 0;
-	}
+	idx = rate->flags & (RATE_INFO_FLAGS_160_MHZ_WIDTH |
+			     RATE_INFO_FLAGS_80P80_MHZ_WIDTH) ? 3 :
+		  rate->flags & RATE_INFO_FLAGS_80_MHZ_WIDTH ? 2 :
+		  rate->flags & RATE_INFO_FLAGS_40_MHZ_WIDTH ? 1 : 0;
 
 	bitrate = base[idx][rate->mcs];
 	bitrate *= rate->nss;
@@ -1173,7 +1104,8 @@ u32 cfg80211_calculate_bitrate(struct rate_info *rate)
 	modulation = rate->mcs & 7;
 	streams = (rate->mcs >> 3) + 1;
 
-	bitrate = (rate->bw == RATE_INFO_BW_40) ? 13500000 : 6500000;
+	bitrate = (rate->flags & RATE_INFO_FLAGS_40_MHZ_WIDTH) ?
+			13500000 : 6500000;
 
 	if (modulation < 4)
 		bitrate *= (modulation + 1);
@@ -1292,54 +1224,12 @@ int cfg80211_get_p2p_attr(const u8 *ies, unsigned int len,
 }
 EXPORT_SYMBOL(cfg80211_get_p2p_attr);
 
-static bool ieee80211_id_in_list(const u8 *ids, int n_ids, u8 id)
-{
-	int i;
-
-	for (i = 0; i < n_ids; i++)
-		if (ids[i] == id)
-			return true;
-	return false;
-}
-
-size_t ieee80211_ie_split_ric(const u8 *ies, size_t ielen,
-			      const u8 *ids, int n_ids,
-			      const u8 *after_ric, int n_after_ric,
-			      size_t offset)
-{
-	size_t pos = offset;
-
-	while (pos < ielen && ieee80211_id_in_list(ids, n_ids, ies[pos])) {
-		if (ies[pos] == WLAN_EID_RIC_DATA && n_after_ric) {
-			pos += 2 + ies[pos + 1];
-
-			while (pos < ielen &&
-			       !ieee80211_id_in_list(after_ric, n_after_ric,
-						     ies[pos]))
-				pos += 2 + ies[pos + 1];
-		} else {
-			pos += 2 + ies[pos + 1];
-		}
-	}
-
-	return pos;
-}
-EXPORT_SYMBOL(ieee80211_ie_split_ric);
-
-size_t ieee80211_ie_split(const u8 *ies, size_t ielen,
-			  const u8 *ids, int n_ids, size_t offset)
-{
-	return ieee80211_ie_split_ric(ies, ielen, ids, n_ids, NULL, 0, offset);
-}
-EXPORT_SYMBOL(ieee80211_ie_split);
-
 bool ieee80211_operating_class_to_band(u8 operating_class,
 				       enum ieee80211_band *band)
 {
 	switch (operating_class) {
 	case 112:
 	case 115 ... 127:
-	case 128 ... 130:
 		*band = IEEE80211_BAND_5GHZ;
 		return true;
 	case 81:
@@ -1356,135 +1246,6 @@ bool ieee80211_operating_class_to_band(u8 operating_class,
 	return false;
 }
 EXPORT_SYMBOL(ieee80211_operating_class_to_band);
-
-bool ieee80211_chandef_to_operating_class(struct cfg80211_chan_def *chandef,
-					  u8 *op_class)
-{
-	u8 vht_opclass;
-	u32 freq = chandef->center_freq1;
-
-	if (freq >= 2412 && freq <= 2472) {
-		if (chandef->width > NL80211_CHAN_WIDTH_40)
-			return false;
-
-		/* 2.407 GHz, channels 1..13 */
-		if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 83; /* HT40+ */
-			else
-				*op_class = 84; /* HT40- */
-		} else {
-			*op_class = 81;
-		}
-
-		return true;
-	}
-
-	if (freq == 2484) {
-		if (chandef->width > NL80211_CHAN_WIDTH_40)
-			return false;
-
-		*op_class = 82; /* channel 14 */
-		return true;
-	}
-
-	switch (chandef->width) {
-	case NL80211_CHAN_WIDTH_80:
-		vht_opclass = 128;
-		break;
-	case NL80211_CHAN_WIDTH_160:
-		vht_opclass = 129;
-		break;
-	case NL80211_CHAN_WIDTH_80P80:
-		vht_opclass = 130;
-		break;
-	case NL80211_CHAN_WIDTH_10:
-	case NL80211_CHAN_WIDTH_5:
-		return false; /* unsupported for now */
-	default:
-		vht_opclass = 0;
-		break;
-	}
-
-	/* 5 GHz, channels 36..48 */
-	if (freq >= 5180 && freq <= 5240) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 116;
-			else
-				*op_class = 117;
-		} else {
-			*op_class = 115;
-		}
-
-		return true;
-	}
-
-	/* 5 GHz, channels 52..64 */
-	if (freq >= 5260 && freq <= 5320) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 119;
-			else
-				*op_class = 120;
-		} else {
-			*op_class = 118;
-		}
-
-		return true;
-	}
-
-	/* 5 GHz, channels 100..144 */
-	if (freq >= 5500 && freq <= 5720) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 122;
-			else
-				*op_class = 123;
-		} else {
-			*op_class = 121;
-		}
-
-		return true;
-	}
-
-	/* 5 GHz, channels 149..169 */
-	if (freq >= 5745 && freq <= 5845) {
-		if (vht_opclass) {
-			*op_class = vht_opclass;
-		} else if (chandef->width == NL80211_CHAN_WIDTH_40) {
-			if (freq > chandef->chan->center_freq)
-				*op_class = 126;
-			else
-				*op_class = 127;
-		} else if (freq <= 5805) {
-			*op_class = 124;
-		} else {
-			*op_class = 125;
-		}
-
-		return true;
-	}
-
-	/* 56.16 GHz, channel 1..4 */
-	if (freq >= 56160 + 2160 * 1 && freq <= 56160 + 2160 * 4) {
-		if (chandef->width >= NL80211_CHAN_WIDTH_40)
-			return false;
-
-		*op_class = 180;
-		return true;
-	}
-
-	/* not supported yet */
-	return false;
-}
-EXPORT_SYMBOL(ieee80211_chandef_to_operating_class);
 
 int cfg80211_validate_beacon_int(struct cfg80211_registered_device *rdev,
 				 u32 beacon_int)
@@ -1814,48 +1575,3 @@ EXPORT_SYMBOL(rfc1042_header);
 const unsigned char bridge_tunnel_header[] __aligned(2) =
 	{ 0xaa, 0xaa, 0x03, 0x00, 0x00, 0xf8 };
 EXPORT_SYMBOL(bridge_tunnel_header);
-
-/* Layer 2 Update frame (802.2 Type 1 LLC XID Update response) */
-struct iapp_layer2_update {
-	u8 da[ETH_ALEN];	/* broadcast */
-	u8 sa[ETH_ALEN];	/* STA addr */
-	__be16 len;		/* 6 */
-	u8 dsap;		/* 0 */
-	u8 ssap;		/* 0 */
-	u8 control;
-	u8 xid_info[3];
-} __packed;
-
-void cfg80211_send_layer2_update(struct net_device *dev, const u8 *addr)
-{
-	struct iapp_layer2_update *msg;
-	struct sk_buff *skb;
-
-	/* Send Level 2 Update Frame to update forwarding tables in layer 2
-	 * bridge devices */
-
-	skb = dev_alloc_skb(sizeof(*msg));
-	if (!skb)
-		return;
-	msg = (struct iapp_layer2_update *)skb_put(skb, sizeof(*msg));
-
-	/* 802.2 Type 1 Logical Link Control (LLC) Exchange Identifier (XID)
-	 * Update response frame; IEEE Std 802.2-1998, 5.4.1.2.1 */
-
-	eth_broadcast_addr(msg->da);
-	ether_addr_copy(msg->sa, addr);
-	msg->len = htons(6);
-	msg->dsap = 0;
-	msg->ssap = 0x01;	/* NULL LSAP, CR Bit: Response */
-	msg->control = 0xaf;	/* XID response lsb.1111F101.
-				 * F=0 (no poll command; unsolicited frame) */
-	msg->xid_info[0] = 0x81;	/* XID format identifier */
-	msg->xid_info[1] = 1;	/* LLC types/classes: Type 1 LLC */
-	msg->xid_info[2] = 0;	/* XID sender's receive window size (RW) */
-
-	skb->dev = dev;
-	skb->protocol = eth_type_trans(skb, dev);
-	memset(skb->cb, 0, sizeof(skb->cb));
-	netif_rx_ni(skb);
-}
-EXPORT_SYMBOL(cfg80211_send_layer2_update);

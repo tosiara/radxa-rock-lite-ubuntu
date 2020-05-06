@@ -82,7 +82,7 @@ struct usb_host_interface {
 	int extralen;
 	unsigned char *extra;   /* Extra descriptors */
 
-	/* array of desc.bNumEndpoints endpoints associated with this
+	/* array of desc.bNumEndpoint endpoints associated with this
 	 * interface setting.  these will be in no particular order.
 	 */
 	struct usb_host_endpoint *endpoint;
@@ -122,8 +122,6 @@ enum usb_interface_condition {
  *	has been deferred.
  * @needs_binding: flag set when the driver should be re-probed or unbound
  *	following a reset or suspend operation it doesn't support.
- * @authorized: This allows to (de)authorize individual interfaces instead
- *	a whole device in contrast to the device authorization.
  * @dev: driver model's view of this device
  * @usb_dev: if an interface is bound to the USB major, this will point
  *	to the sysfs representation for that device.
@@ -179,7 +177,6 @@ struct usb_interface {
 	unsigned needs_altsetting0:1;	/* switch to altsetting 0 is pending */
 	unsigned needs_binding:1;	/* needs delayed unbind/rebind */
 	unsigned resetting_device:1;	/* true: bandwidth alloc after reset */
-	unsigned authorized:1;		/* used for interface authorization */
 
 	struct device dev;		/* interface specific device info */
 	struct device *usb_dev;
@@ -326,9 +323,7 @@ struct usb_host_bos {
 	/* wireless cap descriptor is handled by wusb */
 	struct usb_ext_cap_descriptor	*ext_cap;
 	struct usb_ss_cap_descriptor	*ss_cap;
-	struct usb_ssp_cap_descriptor	*ssp_cap;
 	struct usb_ss_container_id_descriptor	*ss_id;
-	struct usb_ptm_cap_descriptor	*ptm_cap;
 };
 
 int __usb_get_extra_descriptor(char *buffer, unsigned size,
@@ -509,8 +504,6 @@ struct usb3_lpm_parameters {
  * @usb2_hw_lpm_enabled: USB2 hardware LPM is enabled
  * @usb2_hw_lpm_allowed: Userspace allows USB 2.0 LPM to be enabled
  * @usb3_lpm_enabled: USB3 hardware LPM enabled
- * @usb3_lpm_u1_enabled: USB3 hardware U1 LPM enabled
- * @usb3_lpm_u2_enabled: USB3 hardware U2 LPM enabled
  * @string_langid: language ID for strings
  * @product: iProduct string, if present (static)
  * @manufacturer: iManufacturer string, if present (static)
@@ -584,8 +577,6 @@ struct usb_device {
 	unsigned usb2_hw_lpm_enabled:1;
 	unsigned usb2_hw_lpm_allowed:1;
 	unsigned usb3_lpm_enabled:1;
-	unsigned usb3_lpm_u1_enabled:1;
-	unsigned usb3_lpm_u2_enabled:1;
 	int string_langid;
 
 	/* static strings from the device */
@@ -664,7 +655,7 @@ static inline bool usb_acpi_power_manageable(struct usb_device *hdev, int index)
 #endif
 
 /* USB autosuspend and autoresume */
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_RUNTIME
 extern void usb_enable_autosuspend(struct usb_device *udev);
 extern void usb_disable_autosuspend(struct usb_device *udev);
 

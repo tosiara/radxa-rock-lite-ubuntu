@@ -39,7 +39,6 @@ typedef void (elevator_deactivate_req_fn) (struct request_queue *, struct reques
 typedef int (elevator_init_fn) (struct request_queue *,
 				struct elevator_type *e);
 typedef void (elevator_exit_fn) (struct elevator_queue *);
-typedef void (elevator_registered_fn) (struct request_queue *);
 
 struct elevator_ops
 {
@@ -69,7 +68,6 @@ struct elevator_ops
 
 	elevator_init_fn *elevator_init_fn;
 	elevator_exit_fn *elevator_exit_fn;
-	elevator_registered_fn *elevator_registered_fn;
 };
 
 #define ELV_NAME_MAX	(16)
@@ -97,7 +95,7 @@ struct elevator_type
 	struct module *elevator_owner;
 
 	/* managed by elevator core */
-	char icq_cache_name[ELV_NAME_MAX + 6];	/* elvname + "_io_cq" */
+	char icq_cache_name[ELV_NAME_MAX + 5];	/* elvname + "_io_cq" */
 	struct list_head list;
 };
 

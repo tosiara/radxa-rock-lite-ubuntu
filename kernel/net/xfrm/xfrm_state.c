@@ -623,7 +623,7 @@ void xfrm_sad_getinfo(struct net *net, struct xfrmk_sadinfo *si)
 {
 	spin_lock_bh(&net->xfrm.xfrm_state_lock);
 	si->sadcnt = net->xfrm.state_num;
-	si->sadhcnt = net->xfrm.state_hmask + 1;
+	si->sadhcnt = net->xfrm.state_hmask;
 	si->sadhmcnt = xfrm_state_hashmax;
 	spin_unlock_bh(&net->xfrm.xfrm_state_lock);
 }
@@ -927,8 +927,8 @@ struct xfrm_state *xfrm_state_lookup_byspi(struct net *net, __be32 spi,
 			x->id.spi != spi)
 			continue;
 
-		xfrm_state_hold(x);
 		spin_unlock_bh(&net->xfrm.xfrm_state_lock);
+		xfrm_state_hold(x);
 		return x;
 	}
 	spin_unlock_bh(&net->xfrm.xfrm_state_lock);
@@ -1043,12 +1043,12 @@ static struct xfrm_state *__find_acq_core(struct net *net,
 			break;
 
 		case AF_INET6:
-			x->sel.daddr.in6 = daddr->in6;
-			x->sel.saddr.in6 = saddr->in6;
+			*(struct in6_addr *)x->sel.daddr.a6 = *(struct in6_addr *)daddr;
+			*(struct in6_addr *)x->sel.saddr.a6 = *(struct in6_addr *)saddr;
 			x->sel.prefixlen_d = 128;
 			x->sel.prefixlen_s = 128;
-			x->props.saddr.in6 = saddr->in6;
-			x->id.daddr.in6 = daddr->in6;
+			*(struct in6_addr *)x->props.saddr.a6 = *(struct in6_addr *)saddr;
+			*(struct in6_addr *)x->id.daddr.a6 = *(struct in6_addr *)daddr;
 			break;
 		}
 
@@ -1159,7 +1159,6 @@ static struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig)
 
 	if (orig->aead) {
 		x->aead = xfrm_algo_aead_clone(orig->aead);
-		x->geniv = orig->geniv;
 		if (!x->aead)
 			goto error;
 	}
@@ -1629,7 +1628,7 @@ int xfrm_state_walk(struct net *net, struct xfrm_state_walk *walk,
 	if (list_empty(&walk->all))
 		x = list_first_entry(&net->xfrm.state_all, struct xfrm_state_walk, all);
 	else
-		x = list_first_entry(&walk->all, struct xfrm_state_walk, all);
+		x = list_entry(&walk->all, struct xfrm_state_walk, all);
 	list_for_each_entry_from(x, &net->xfrm.state_all, all) {
 		if (x->state == XFRM_STATE_DEAD)
 			continue;
@@ -1884,7 +1883,6 @@ int xfrm_user_policy(struct sock *sk, int optname, u8 __user *optval, int optlen
 	if (err >= 0) {
 		xfrm_sk_policy_insert(sk, err, pol);
 		xfrm_pol_put(pol);
-		__sk_dst_reset(sk);
 		err = 0;
 	}
 
@@ -1924,7 +1922,7 @@ int xfrm_state_register_afinfo(struct xfrm_state_afinfo *afinfo)
 		return -EAFNOSUPPORT;
 	spin_lock_bh(&xfrm_state_afinfo_lock);
 	if (unlikely(xfrm_state_afinfo[afinfo->family] != NULL))
-		err = -EEXIST;
+		err = -ENOBUFS;
 	else
 		rcu_assign_pointer(xfrm_state_afinfo[afinfo->family], afinfo);
 	spin_unlock_bh(&xfrm_state_afinfo_lock);
@@ -2133,7 +2131,7 @@ void xfrm_state_fini(struct net *net)
 	unsigned int sz;
 
 	flush_work(&net->xfrm.state_hash_work);
-	xfrm_state_flush(net, 0, false);
+	xfrm_state_flush(net, IPSEC_PROTO_ANY, false);
 	flush_work(&net->xfrm.state_gc_work);
 
 	WARN_ON(!list_empty(&net->xfrm.state_all));

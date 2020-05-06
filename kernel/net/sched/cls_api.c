@@ -293,7 +293,7 @@ replay:
 			RCU_INIT_POINTER(*back, next);
 
 			tfilter_notify(net, skb, n, tp, fh, RTM_DELTFILTER);
-			tcf_destroy(tp, true);
+			tcf_destroy(tp);
 			err = 0;
 			goto errout;
 		}
@@ -308,20 +308,14 @@ replay:
 			err = -EEXIST;
 			if (n->nlmsg_flags & NLM_F_EXCL) {
 				if (tp_created)
-					tcf_destroy(tp, true);
+					tcf_destroy(tp);
 				goto errout;
 			}
 			break;
 		case RTM_DELTFILTER:
 			err = tp->ops->delete(tp, fh);
-			if (err == 0) {
-				struct tcf_proto *next = rtnl_dereference(tp->next);
-
-				tfilter_notify(net, skb, n, tp,
-					       t->tcm_handle, RTM_DELTFILTER);
-				if (tcf_destroy(tp, false))
-					RCU_INIT_POINTER(*back, next);
-			}
+			if (err == 0)
+				tfilter_notify(net, skb, n, tp, fh, RTM_DELTFILTER);
 			goto errout;
 		case RTM_GETTFILTER:
 			err = tfilter_notify(net, skb, n, tp, fh, RTM_NEWTFILTER);
@@ -342,7 +336,7 @@ replay:
 		tfilter_notify(net, skb, n, tp, fh, RTM_NEWTFILTER);
 	} else {
 		if (tp_created)
-			tcf_destroy(tp, true);
+			tcf_destroy(tp);
 	}
 
 errout:

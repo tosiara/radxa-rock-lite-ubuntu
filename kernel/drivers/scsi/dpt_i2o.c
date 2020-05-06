@@ -180,14 +180,11 @@ static u8 adpt_read_blink_led(adpt_hba* host)
  *============================================================================
  */
 
-#ifdef MODULE
 static struct pci_device_id dptids[] = {
 	{ PCI_DPT_VENDOR_ID, PCI_DPT_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID,},
 	{ PCI_DPT_VENDOR_ID, PCI_DPT_RAPTOR_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID,},
 	{ 0, }
 };
-#endif
-
 MODULE_DEVICE_TABLE(pci,dptids);
 
 static int adpt_detect(struct scsi_host_template* sht)
@@ -418,8 +415,10 @@ static int adpt_slave_configure(struct scsi_device * device)
 	pHba = (adpt_hba *) host->hostdata[0];
 
 	if (host->can_queue && device->tagged_supported) {
-		scsi_change_queue_depth(device,
+		scsi_adjust_queue_depth(device, MSG_SIMPLE_TAG,
 				host->can_queue - 1);
+	} else {
+		scsi_adjust_queue_depth(device, 0, 1);
 	}
 	return 0;
 }
@@ -571,7 +570,7 @@ static int adpt_show_info(struct seq_file *m, struct Scsi_Host *host)
 	seq_printf(m, "\tpost fifo size  = %d\n\treply fifo size = %d\n\tsg table size   = %d\n\n",
 			host->can_queue, (int) pHba->reply_fifo_size , host->sg_tablesize);
 
-	seq_puts(m, "Devices:\n");
+	seq_printf(m, "Devices:\n");
 	for(chan = 0; chan < MAX_CHANNEL; chan++) {
 		for(id = 0; id < MAX_ID; id++) {
 			d = pHba->channel[chan].device[id];
@@ -1927,9 +1926,6 @@ static void adpt_alpha_info(sysInfo_S* si)
 #endif
 
 #if defined __i386__
-
-#include <uapi/asm/vm86.h>
-
 static void adpt_i386_info(sysInfo_S* si)
 {
 	// This is all the info we need for now
@@ -3568,6 +3564,7 @@ static struct scsi_host_template driver_template = {
 	.slave_configure	= adpt_slave_configure,
 	.can_queue		= MAX_TO_IOP_MESSAGES,
 	.this_id		= 7,
+	.cmd_per_lun		= 1,
 	.use_clustering		= ENABLE_CLUSTERING,
 };
 

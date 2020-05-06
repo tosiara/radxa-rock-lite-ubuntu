@@ -74,26 +74,14 @@
 #define ARM_CPU_PART_CORTEX_A12		0x4100c0d0
 #define ARM_CPU_PART_CORTEX_A17		0x4100c0e0
 #define ARM_CPU_PART_CORTEX_A15		0x4100c0f0
-#define ARM_CPU_PART_CORTEX_A53		0x4100d030
-#define ARM_CPU_PART_CORTEX_A57		0x4100d070
-#define ARM_CPU_PART_CORTEX_A72		0x4100d080
-#define ARM_CPU_PART_CORTEX_A73		0x4100d090
-#define ARM_CPU_PART_CORTEX_A75		0x4100d0a0
 #define ARM_CPU_PART_MASK		0xff00fff0
-
-/* Broadcom cores */
-#define ARM_CPU_PART_BRAHMA_B15		0x420000f0
 
 #define ARM_CPU_XSCALE_ARCH_MASK	0xe000
 #define ARM_CPU_XSCALE_ARCH_V1		0x2000
 #define ARM_CPU_XSCALE_ARCH_V2		0x4000
 #define ARM_CPU_XSCALE_ARCH_V3		0x6000
 
-/* Qualcomm implemented cores */
-#define ARM_CPU_PART_SCORPION		0x510002d0
-
 extern unsigned int processor_id;
-struct proc_info_list *lookup_processor(u32 midr);
 
 #ifdef CONFIG_CPU_CP15
 #define read_cpuid(reg)							\
@@ -265,20 +253,4 @@ static inline int cpu_is_pj4(void)
 #else
 #define cpu_is_pj4()	0
 #endif
-
-static inline int __attribute_const__ cpuid_feature_extract_field(u32 features,
-								  int field)
-{
-	int feature = (features >> field) & 15;
-
-	/* feature registers are signed values */
-	if (feature > 8)
-		feature -= 16;
-
-	return feature;
-}
-
-#define cpuid_feature_extract(reg, field) \
-	cpuid_feature_extract_field(read_cpuid_ext(reg), field)
-
 #endif

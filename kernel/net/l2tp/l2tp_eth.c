@@ -74,7 +74,7 @@ static int l2tp_eth_dev_init(struct net_device *dev)
 
 	priv->dev = dev;
 	eth_hw_addr_random(dev);
-	eth_broadcast_addr(dev->broadcast);
+	memset(&dev->broadcast[0], 0xff, 6);
 	dev->qdisc_tx_busylock = &l2tp_eth_tx_busylock;
 	return 0;
 }
@@ -126,7 +126,6 @@ static struct net_device_ops l2tp_eth_netdev_ops = {
 	.ndo_uninit		= l2tp_eth_dev_uninit,
 	.ndo_start_xmit		= l2tp_eth_dev_xmit,
 	.ndo_get_stats64	= l2tp_eth_get_stats64,
-	.ndo_set_mac_address	= eth_mac_addr,
 };
 
 static void l2tp_eth_dev_setup(struct net_device *dev)
@@ -223,6 +222,12 @@ static int l2tp_eth_create(struct net *net, u32 tunnel_id, u32 session_id, u32 p
 		goto out;
 	}
 
+	session = l2tp_session_find(net, tunnel, session_id);
+	if (session) {
+		rc = -EEXIST;
+		goto out;
+	}
+
 	if (cfg->ifname) {
 		dev = dev_get_by_name(net, cfg->ifname);
 		if (dev) {
@@ -236,8 +241,8 @@ static int l2tp_eth_create(struct net *net, u32 tunnel_id, u32 session_id, u32 p
 
 	session = l2tp_session_create(sizeof(*spriv), tunnel, session_id,
 				      peer_session_id, cfg);
-	if (IS_ERR(session)) {
-		rc = PTR_ERR(session);
+	if (!session) {
+		rc = -ENOMEM;
 		goto out;
 	}
 
@@ -352,4 +357,3 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("James Chapman <jchapman@katalix.com>");
 MODULE_DESCRIPTION("L2TP ethernet pseudowire driver");
 MODULE_VERSION("1.0");
-MODULE_ALIAS_L2TP_PWTYPE(5);

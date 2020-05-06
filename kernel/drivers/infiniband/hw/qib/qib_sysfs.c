@@ -301,9 +301,6 @@ static ssize_t qib_portattr_show(struct kobject *kobj,
 	struct qib_pportdata *ppd =
 		container_of(kobj, struct qib_pportdata, pport_kobj);
 
-	if (!pattr->show)
-		return -EIO;
-
 	return pattr->show(ppd, buf);
 }
 
@@ -314,9 +311,6 @@ static ssize_t qib_portattr_store(struct kobject *kobj,
 		container_of(attr, struct qib_port_attr, attr);
 	struct qib_pportdata *ppd =
 		container_of(kobj, struct qib_pportdata, pport_kobj);
-
-	if (!pattr->store)
-		return -EIO;
 
 	return pattr->store(ppd, buf, len);
 }
@@ -592,8 +586,8 @@ static ssize_t show_serial(struct device *device,
 		container_of(device, struct qib_ibdev, ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 
-	buf[sizeof(dd->serial)] = '\0';
-	memcpy(buf, dd->serial, sizeof(dd->serial));
+	buf[sizeof dd->serial] = '\0';
+	memcpy(buf, dd->serial, sizeof dd->serial);
 	strcat(buf, "\n");
 	return strlen(buf);
 }

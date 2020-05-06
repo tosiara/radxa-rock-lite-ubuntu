@@ -21,7 +21,7 @@ This will build 5 files:
 * parameter.im
 * boot.img
 * rootfs.ext4
-* radxa-rock-lite-kernel4.4-ubuntu16-sdcard.img
+* radxa-rock-lite-kernel3.18-ubuntu16-sdcard.img
 
 ## Prepare SD card and flash
 ```
@@ -37,5 +37,5 @@ $START_SECTOR
 w
 EOF
 
-dd if=radxa-rock-lite-kernel4.4-ubuntu16-sdcard.img of=/dev/disk/by-id/YOURDISK-part1 conv=sync
+dd if=radxa-rock-lite-kernel3.18-ubuntu16-sdcard.img of=/dev/disk/by-id/YOURDISK-part1 conv=sync
 ```

@@ -294,7 +294,7 @@ void cper_mem_err_pack(const struct cper_sec_mem_err *mem,
 const char *cper_mem_err_unpack(struct trace_seq *p,
 				struct cper_mem_err_compact *cmem)
 {
-	const char *ret = trace_seq_buffer_ptr(p);
+	const char *ret = p->buffer + p->len;
 
 	if (cper_mem_err_location(cmem, rcd_decode_str))
 		trace_seq_printf(p, "%s", rcd_decode_str);
@@ -305,17 +305,10 @@ const char *cper_mem_err_unpack(struct trace_seq *p,
 	return ret;
 }
 
-static void cper_print_mem(const char *pfx, const struct cper_sec_mem_err *mem,
-	int len)
+static void cper_print_mem(const char *pfx, const struct cper_sec_mem_err *mem)
 {
 	struct cper_mem_err_compact cmem;
 
-	/* Don't trust UEFI 2.1/2.2 structure with bad validation bits */
-	if (len == sizeof(struct cper_sec_mem_err_old) &&
-	    (mem->validation_bits & ~(CPER_MEM_VALID_RANK_NUMBER - 1))) {
-		pr_err(FW_WARN "valid bits set for fields beyond structure\n");
-		return;
-	}
 	if (mem->validation_bits & CPER_MEM_VALID_ERROR_STATUS)
 		printk("%s""error_status: 0x%016llx\n", pfx, mem->error_status);
 	if (mem->validation_bits & CPER_MEM_VALID_PA)
@@ -375,7 +368,7 @@ static void cper_print_pcie(const char *pfx, const struct cper_sec_pcie *pcie,
 		printk("%s""vendor_id: 0x%04x, device_id: 0x%04x\n", pfx,
 		       pcie->device_id.vendor_id, pcie->device_id.device_id);
 		p = pcie->device_id.class_code;
-		printk("%s""class_code: %02x%02x%02x\n", pfx, p[2], p[1], p[0]);
+		printk("%s""class_code: %02x%02x%02x\n", pfx, p[0], p[1], p[2]);
 	}
 	if (pcie->validation_bits & CPER_PCIE_VALID_SERIAL_NUMBER)
 		printk("%s""serial number: 0x%04x, 0x%04x\n", pfx,
@@ -384,21 +377,6 @@ static void cper_print_pcie(const char *pfx, const struct cper_sec_pcie *pcie,
 		printk(
 	"%s""bridge: secondary_status: 0x%04x, control: 0x%04x\n",
 	pfx, pcie->bridge.secondary_status, pcie->bridge.control);
-
-	/* Fatal errors call __ghes_panic() before AER handler prints this */
-	if ((pcie->validation_bits & CPER_PCIE_VALID_AER_INFO) &&
-	    (gdata->error_severity & CPER_SEV_FATAL)) {
-		struct aer_capability_regs *aer;
-
-		aer = (struct aer_capability_regs *)pcie->aer_info;
-		printk("%saer_uncor_status: 0x%08x, aer_uncor_mask: 0x%08x\n",
-		       pfx, aer->uncor_status, aer->uncor_mask);
-		printk("%saer_uncor_severity: 0x%08x\n",
-		       pfx, aer->uncor_severity);
-		printk("%sTLP Header: %08x %08x %08x %08x\n", pfx,
-		       aer->header_log.dw0, aer->header_log.dw1,
-		       aer->header_log.dw2, aer->header_log.dw3);
-	}
 }
 
 static void cper_estatus_print_section(
@@ -427,10 +405,8 @@ static void cper_estatus_print_section(
 	} else if (!uuid_le_cmp(*sec_type, CPER_SEC_PLATFORM_MEM)) {
 		struct cper_sec_mem_err *mem_err = (void *)(gdata + 1);
 		printk("%s""section_type: memory error\n", newpfx);
-		if (gdata->error_data_length >=
-		    sizeof(struct cper_sec_mem_err_old))
-			cper_print_mem(newpfx, mem_err,
-				       gdata->error_data_length);
+		if (gdata->error_data_length >= sizeof(*mem_err))
+			cper_print_mem(newpfx, mem_err);
 		else
 			goto err_section_too_small;
 	} else if (!uuid_le_cmp(*sec_type, CPER_SEC_PCIE)) {

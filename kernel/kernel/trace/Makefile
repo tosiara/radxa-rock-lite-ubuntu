@@ -1,17 +1,13 @@
 
-# We are fully aware of the dangers of __builtin_return_address()
-FRAME_CFLAGS := $(call cc-disable-warning,frame-address)
-KBUILD_CFLAGS += $(FRAME_CFLAGS)
-
 # Do not instrument the tracer itself:
 
 ifdef CONFIG_FUNCTION_TRACER
 ORIG_CFLAGS := $(KBUILD_CFLAGS)
-KBUILD_CFLAGS = $(subst $(CC_FLAGS_FTRACE),,$(ORIG_CFLAGS))
+KBUILD_CFLAGS = $(subst -pg,,$(ORIG_CFLAGS))
 
 ifdef CONFIG_FTRACE_SELFTEST
 # selftest needs instrumentation
-CFLAGS_trace_selftest_dynamic.o = $(CC_FLAGS_FTRACE)
+CFLAGS_trace_selftest_dynamic.o = -pg
 obj-y += trace_selftest_dynamic.o
 endif
 endif
@@ -57,10 +53,9 @@ obj-$(CONFIG_EVENT_TRACING) += trace_event_perf.o
 endif
 obj-$(CONFIG_EVENT_TRACING) += trace_events_filter.o
 obj-$(CONFIG_EVENT_TRACING) += trace_events_trigger.o
-obj-$(CONFIG_BPF_EVENTS) += bpf_trace.o
 obj-$(CONFIG_KPROBE_EVENT) += trace_kprobe.o
 obj-$(CONFIG_TRACEPOINTS) += power-traces.o
-ifeq ($(CONFIG_PM),y)
+ifeq ($(CONFIG_PM_RUNTIME),y)
 obj-$(CONFIG_TRACEPOINTS) += rpm-traces.o
 endif
 ifeq ($(CONFIG_TRACING),y)

@@ -136,7 +136,7 @@ static int brb_push(struct bop_ring_buffer *brb,
 	return 0;
 }
 
-static int brb_peek(struct bop_ring_buffer *brb, struct block_op *result)
+static int brb_pop(struct bop_ring_buffer *brb, struct block_op *result)
 {
 	struct block_op *bop;
 
@@ -146,14 +146,6 @@ static int brb_peek(struct bop_ring_buffer *brb, struct block_op *result)
 	bop = brb->bops + brb->begin;
 	result->type = bop->type;
 	result->block = bop->block;
-
-	return 0;
-}
-
-static int brb_pop(struct bop_ring_buffer *brb)
-{
-	if (brb_empty(brb))
-		return -ENODATA;
 
 	brb->begin = brb_next(brb, brb->begin);
 
@@ -219,7 +211,7 @@ static int apply_bops(struct sm_metadata *smm)
 	while (!brb_empty(&smm->uncommitted)) {
 		struct block_op bop;
 
-		r = brb_peek(&smm->uncommitted, &bop);
+		r = brb_pop(&smm->uncommitted, &bop);
 		if (r) {
 			DMERR("bug in bop ring buffer");
 			break;
@@ -228,8 +220,6 @@ static int apply_bops(struct sm_metadata *smm)
 		r = commit_bop(smm, &bop);
 		if (r)
 			break;
-
-		brb_pop(&smm->uncommitted);
 	}
 
 	return r;
@@ -248,7 +238,7 @@ static int out(struct sm_metadata *smm)
 	}
 
 	if (smm->recursion_count == 1)
-		r = apply_bops(smm);
+		apply_bops(smm);
 
 	smm->recursion_count--;
 
@@ -447,10 +437,7 @@ static int sm_metadata_new_block_(struct dm_space_map *sm, dm_block_t *b)
 	enum allocation_event ev;
 	struct sm_metadata *smm = container_of(sm, struct sm_metadata, sm);
 
-	/*
-	 * Any block we allocate has to be free in both the old and current ll.
-	 */
-	r = sm_ll_find_common_free_block(&smm->old_ll, &smm->ll, smm->begin, smm->ll.nr_blocks, b);
+	r = sm_ll_find_free_block(&smm->old_ll, smm->begin, smm->old_ll.nr_blocks, b);
 	if (r)
 		return r;
 
@@ -604,9 +591,7 @@ static int sm_bootstrap_get_count(struct dm_space_map *sm, dm_block_t b,
 {
 	struct sm_metadata *smm = container_of(sm, struct sm_metadata, sm);
 
-	*result = (b < smm->begin) ? 1 : 0;
-
-	return 0;
+	return b < smm->begin ? 1 : 0;
 }
 
 static int sm_bootstrap_count_is_more_than_one(struct dm_space_map *sm,
@@ -696,6 +681,7 @@ static struct dm_space_map bootstrap_ops = {
 static int sm_metadata_extend(struct dm_space_map *sm, dm_block_t extra_blocks)
 {
 	int r, i;
+	enum allocation_event ev;
 	struct sm_metadata *smm = container_of(sm, struct sm_metadata, sm);
 	dm_block_t old_len = smm->ll.nr_blocks;
 
@@ -717,12 +703,11 @@ static int sm_metadata_extend(struct dm_space_map *sm, dm_block_t extra_blocks)
 	 * allocate any new blocks.
 	 */
 	do {
-		for (i = old_len; !r && i < smm->begin; i++)
-			r = add_bop(smm, BOP_INC, i);
-
-		if (r)
-			goto out;
-
+		for (i = old_len; !r && i < smm->begin; i++) {
+			r = sm_ll_inc(&smm->ll, i, &ev);
+			if (r)
+				goto out;
+		}
 		old_len = smm->begin;
 
 		r = apply_bops(smm);
@@ -767,6 +752,7 @@ int dm_sm_metadata_create(struct dm_space_map *sm,
 {
 	int r;
 	dm_block_t i;
+	enum allocation_event ev;
 	struct sm_metadata *smm = container_of(sm, struct sm_metadata, sm);
 
 	smm->begin = superblock + 1;
@@ -792,7 +778,7 @@ int dm_sm_metadata_create(struct dm_space_map *sm,
 	 * allocated blocks that they were built from.
 	 */
 	for (i = superblock; !r && i < smm->begin; i++)
-		r = add_bop(smm, BOP_INC, i);
+		r = sm_ll_inc(&smm->ll, i, &ev);
 
 	if (r)
 		return r;

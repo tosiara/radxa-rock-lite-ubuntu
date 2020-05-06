@@ -3114,7 +3114,7 @@ static struct sk_buff *skge_rx_get(struct net_device *dev,
 	skb_put(skb, len);
 
 	if (dev->features & NETIF_F_RXCSUM) {
-		skb->csum = le16_to_cpu(csum);
+		skb->csum = csum;
 		skb->ip_summed = CHECKSUM_COMPLETE;
 	}
 
@@ -3435,9 +3435,10 @@ static irqreturn_t skge_intr(int irq, void *dev_id)
 
 	if (status & IS_HW_ERR)
 		skge_error_irq(hw);
-out:
+
 	skge_write32(hw, B0_IMSK, hw->intr_mask);
 	skge_read32(hw, B0_IMSK);
+out:
 	spin_unlock(&hw->hw_lock);
 
 	return IRQ_RETVAL(handled);

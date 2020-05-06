@@ -840,8 +840,6 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 		if (!phydev)
 			dev_info(dev,
 				 "MDIO of the phy is not registered yet\n");
-		else
-			put_device(&phydev->dev);
 		return 0;
 	}
 
@@ -1008,10 +1006,9 @@ static int xemaclite_close(struct net_device *dev)
  * deferred and the Tx queue is stopped so that the deferred socket buffer can
  * be transmitted when the Emaclite device is free to transmit data.
  *
- * Return:	NETDEV_TX_OK, always.
+ * Return:	0, always.
  */
-static netdev_tx_t
-xemaclite_send(struct sk_buff *orig_skb, struct net_device *dev)
+static int xemaclite_send(struct sk_buff *orig_skb, struct net_device *dev)
 {
 	struct net_local *lp = netdev_priv(dev);
 	struct sk_buff *new_skb;
@@ -1032,7 +1029,7 @@ xemaclite_send(struct sk_buff *orig_skb, struct net_device *dev)
 		/* Take the time stamp now, since we can't do this in an ISR. */
 		skb_tx_timestamp(new_skb);
 		spin_unlock_irqrestore(&lp->reset_lock, flags);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 	spin_unlock_irqrestore(&lp->reset_lock, flags);
 
@@ -1041,7 +1038,7 @@ xemaclite_send(struct sk_buff *orig_skb, struct net_device *dev)
 	dev->stats.tx_bytes += len;
 	dev_consume_skb_any(new_skb);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /**
@@ -1077,7 +1074,7 @@ static bool get_bool(struct platform_device *ofdev, const char *s)
 	} else {
 		dev_warn(&ofdev->dev, "Parameter %s not found,"
 			"defaulting to false\n", s);
-		return false;
+		return 0;
 	}
 }
 
@@ -1124,7 +1121,6 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	res = platform_get_resource(ofdev, IORESOURCE_IRQ, 0);
 	if (!res) {
 		dev_err(dev, "no IRQ found\n");
-		rc = -ENXIO;
 		goto error;
 	}
 
@@ -1216,7 +1212,8 @@ static int xemaclite_of_remove(struct platform_device *of_dev)
 
 	unregister_netdev(ndev);
 
-	of_node_put(lp->phy_node);
+	if (lp->phy_node)
+		of_node_put(lp->phy_node);
 	lp->phy_node = NULL;
 
 	xemaclite_remove_ndev(ndev);
@@ -1246,7 +1243,7 @@ static struct net_device_ops xemaclite_netdev_ops = {
 };
 
 /* Match table for OF platform binding */
-static const struct of_device_id xemaclite_of_match[] = {
+static struct of_device_id xemaclite_of_match[] = {
 	{ .compatible = "xlnx,opb-ethernetlite-1.01.a", },
 	{ .compatible = "xlnx,opb-ethernetlite-1.01.b", },
 	{ .compatible = "xlnx,xps-ethernetlite-1.00.a", },

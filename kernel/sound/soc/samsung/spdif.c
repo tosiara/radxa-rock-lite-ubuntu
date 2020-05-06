@@ -471,6 +471,7 @@ static struct platform_driver samsung_spdif_driver = {
 	.remove	= spdif_remove,
 	.driver	= {
 		.name	= "samsung-spdif",
+		.owner	= THIS_MODULE,
 	},
 };
 

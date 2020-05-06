@@ -156,7 +156,7 @@ struct fb_cursor_user {
 #define FB_EVENT_GET_REQ                0x0D
 /*      Unbind from the console if possible */
 #define FB_EVENT_FB_UNBIND              0x0E
-/*      CONSOLE-SPECIFIC: remap all consoles to new fb - for vga_switcheroo */
+/*      CONSOLE-SPECIFIC: remap all consoles to new fb - for vga switcheroo */
 #define FB_EVENT_REMAP_ALL_CONSOLE      0x0F
 /*      A hardware display blank early change occured */
 #define FB_EARLY_EVENT_BLANK		0x10
@@ -483,10 +483,7 @@ struct fb_info {
 #ifdef CONFIG_FB_TILEBLITTING
 	struct fb_tile_ops *tileops;    /* Tile Blitting */
 #endif
-	union {
-		char __iomem *screen_base;	/* Virtual address */
-		char *screen_buffer;
-	};
+	char __iomem *screen_base;	/* Virtual address */
 	unsigned long screen_size;	/* Amount of ioremapped VRAM or 0 */ 
 	void *pseudo_palette;		/* Fake palette of 16 colors */ 
 #define FBINFO_STATE_RUNNING	0
@@ -716,6 +713,8 @@ extern int fb_parse_edid(unsigned char *edid, struct fb_var_screeninfo *var);
 extern const unsigned char *fb_firmware_edid(struct device *device);
 extern void fb_edid_to_monspecs(unsigned char *edid,
 				struct fb_monspecs *specs);
+extern void fb_edid_add_monspecs(unsigned char *edid,
+				 struct fb_monspecs *specs);
 extern void fb_destroy_modedb(struct fb_videomode *modedb);
 extern int fb_find_mode_cvt(struct fb_videomode *mode, int margins, int rb);
 extern unsigned char *fb_ddc_read(struct i2c_adapter *adapter);
@@ -727,9 +726,7 @@ extern int fb_videomode_from_videomode(const struct videomode *vm,
 				       struct fb_videomode *fbmode);
 
 /* drivers/video/modedb.c */
-#define VESA_MODEDB_SIZE 43
-#define DMT_SIZE 0x50
-
+#define VESA_MODEDB_SIZE 34
 extern void fb_var_to_videomode(struct fb_videomode *mode,
 				const struct fb_var_screeninfo *var);
 extern void fb_videomode_to_var(struct fb_var_screeninfo *var,
@@ -780,16 +777,9 @@ struct fb_videomode {
 	u32 flag;
 };
 
-struct dmt_videomode {
-	u32 dmt_id;
-	u32 std_2byte_code;
-	u32 cvt_3byte_code;
-	const struct fb_videomode *mode;
-};
-
 extern const char *fb_mode_option;
 extern const struct fb_videomode vesa_modes[];
-extern const struct dmt_videomode dmt_modes[];
+extern const struct fb_videomode cea_modes[64];
 
 struct fb_modelist {
 	struct list_head list;

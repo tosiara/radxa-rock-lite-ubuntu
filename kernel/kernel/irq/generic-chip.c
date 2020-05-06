@@ -191,16 +191,6 @@ int irq_gc_set_wake(struct irq_data *d, unsigned int on)
 	return 0;
 }
 
-static u32 irq_readl_be(void __iomem *addr)
-{
-	return ioread32be(addr);
-}
-
-static void irq_writel_be(u32 val, void __iomem *addr)
-{
-	iowrite32be(val, addr);
-}
-
 static void
 irq_init_generic_chip(struct irq_chip_generic *gc, const char *name,
 		      int num_ct, unsigned int irq_base,
@@ -310,13 +300,7 @@ int irq_alloc_domain_generic_chips(struct irq_domain *d, int irqs_per_chip,
 		dgc->gc[i] = gc = tmp;
 		irq_init_generic_chip(gc, name, num_ct, i * irqs_per_chip,
 				      NULL, handler);
-
 		gc->domain = d;
-		if (gcflags & IRQ_GC_BE_IO) {
-			gc->reg_readl = &irq_readl_be;
-			gc->reg_writel = &irq_writel_be;
-		}
-
 		raw_spin_lock_irqsave(&gc_lock, flags);
 		list_add_tail(&gc->list, &gc_list);
 		raw_spin_unlock_irqrestore(&gc_lock, flags);
@@ -360,7 +344,7 @@ static struct lock_class_key irq_nested_lock_class;
 int irq_map_generic_chip(struct irq_domain *d, unsigned int virq,
 			 irq_hw_number_t hw_irq)
 {
-	struct irq_data *data = irq_domain_get_irq_data(d, virq);
+	struct irq_data *data = irq_get_irq_data(virq);
 	struct irq_domain_chip_generic *dgc = d->gc;
 	struct irq_chip_generic *gc;
 	struct irq_chip_type *ct;
@@ -405,35 +389,15 @@ int irq_map_generic_chip(struct irq_domain *d, unsigned int virq,
 	else
 		data->mask = 1 << idx;
 
-	irq_domain_set_info(d, virq, hw_irq, chip, gc, ct->handler, NULL, NULL);
+	irq_set_chip_and_handler(virq, chip, ct->handler);
+	irq_set_chip_data(virq, gc);
 	irq_modify_status(virq, dgc->irq_flags_to_clear, dgc->irq_flags_to_set);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(irq_map_generic_chip);
 
-static void irq_unmap_generic_chip(struct irq_domain *d, unsigned int virq)
-{
-	struct irq_data *data = irq_domain_get_irq_data(d, virq);
-	struct irq_domain_chip_generic *dgc = d->gc;
-	unsigned int hw_irq = data->hwirq;
-	struct irq_chip_generic *gc;
-	int irq_idx;
-
-	gc = irq_get_domain_generic_chip(d, hw_irq);
-	if (!gc)
-		return;
-
-	irq_idx = hw_irq % dgc->irqs_per_chip;
-
-	clear_bit(irq_idx, &gc->installed);
-	irq_domain_set_info(d, virq, hw_irq, &no_irq_chip, NULL, NULL, NULL,
-			    NULL);
-
-}
-
 struct irq_domain_ops irq_generic_chip_ops = {
 	.map	= irq_map_generic_chip,
-	.unmap  = irq_unmap_generic_chip,
 	.xlate	= irq_domain_xlate_onetwocell,
 };
 EXPORT_SYMBOL_GPL(irq_generic_chip_ops);
@@ -574,9 +538,6 @@ static int irq_gc_suspend(void)
 			if (data)
 				ct->chip.irq_suspend(data);
 		}
-
-		if (gc->suspend)
-			gc->suspend(gc);
 	}
 	return 0;
 }
@@ -587,9 +548,6 @@ static void irq_gc_resume(void)
 
 	list_for_each_entry(gc, &gc_list, list) {
 		struct irq_chip_type *ct = gc->chip_types;
-
-		if (gc->resume)
-			gc->resume(gc);
 
 		if (ct->chip.irq_resume) {
 			struct irq_data *data = irq_gc_get_irq_data(gc);

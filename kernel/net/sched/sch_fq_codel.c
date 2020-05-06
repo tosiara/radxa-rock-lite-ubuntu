@@ -6,7 +6,7 @@
  *	as published by the Free Software Foundation; either version
  *	2 of the License, or (at your option) any later version.
  *
- *  Copyright (C) 2012,2015 Eric Dumazet <edumazet@google.com>
+ *  Copyright (C) 2012 Eric Dumazet <edumazet@google.com>
  */
 
 #include <linux/module.h>
@@ -23,6 +23,7 @@
 #include <linux/vmalloc.h>
 #include <net/netlink.h>
 #include <net/pkt_sched.h>
+#include <net/flow_keys.h>
 #include <net/codel.h>
 
 /*	Fair Queue CoDel.
@@ -55,7 +56,7 @@ struct fq_codel_sched_data {
 	struct fq_codel_flow *flows;	/* Flows table [flows_cnt] */
 	u32		*backlogs;	/* backlog table [flows_cnt] */
 	u32		flows_cnt;	/* number of flows */
-	siphash_key_t	perturbation;	/* hash perturbation */
+	u32		perturbation;	/* hash perturbation */
 	u32		quantum;	/* psched_mtu(qdisc_dev(sch)); */
 	struct codel_params cparams;
 	struct codel_stats cstats;
@@ -67,9 +68,15 @@ struct fq_codel_sched_data {
 };
 
 static unsigned int fq_codel_hash(const struct fq_codel_sched_data *q,
-				  struct sk_buff *skb)
+				  const struct sk_buff *skb)
 {
-	u32 hash = skb_get_hash_perturb(skb, &q->perturbation);
+	struct flow_keys keys;
+	unsigned int hash;
+
+	skb_flow_dissect(skb, &keys);
+	hash = jhash_3words((__force u32)keys.dst,
+			    (__force u32)keys.src ^ keys.ip_proto,
+			    (__force u32)keys.ports, q->perturbation);
 
 	return reciprocal_scale(hash, q->flows_cnt);
 }
@@ -92,7 +99,7 @@ static unsigned int fq_codel_classify(struct sk_buff *skb, struct Qdisc *sch,
 		return fq_codel_hash(q, skb) + 1;
 
 	*qerr = NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
-	result = tc_classify(skb, filter, &res, false);
+	result = tc_classify(skb, filter, &res);
 	if (result >= 0) {
 #ifdef CONFIG_NET_CLS_ACT
 		switch (result) {
@@ -155,21 +162,12 @@ static unsigned int fq_codel_drop(struct Qdisc *sch)
 	skb = dequeue_head(flow);
 	len = qdisc_pkt_len(skb);
 	q->backlogs[idx] -= len;
+	kfree_skb(skb);
 	sch->q.qlen--;
 	qdisc_qstats_drop(sch);
 	qdisc_qstats_backlog_dec(sch, skb);
-	kfree_skb(skb);
 	flow->dropped++;
 	return idx;
-}
-
-static unsigned int fq_codel_qdisc_drop(struct Qdisc *sch)
-{
-	unsigned int prev_backlog;
-
-	prev_backlog = sch->qstats.backlog;
-	fq_codel_drop(sch);
-	return prev_backlog - sch->qstats.backlog;
 }
 
 static int fq_codel_enqueue(struct sk_buff *skb, struct Qdisc *sch)
@@ -293,26 +291,10 @@ begin:
 
 static void fq_codel_reset(struct Qdisc *sch)
 {
-	struct fq_codel_sched_data *q = qdisc_priv(sch);
-	int i;
+	struct sk_buff *skb;
 
-	INIT_LIST_HEAD(&q->new_flows);
-	INIT_LIST_HEAD(&q->old_flows);
-	for (i = 0; i < q->flows_cnt; i++) {
-		struct fq_codel_flow *flow = q->flows + i;
-
-		while (flow->head) {
-			struct sk_buff *skb = dequeue_head(flow);
-
-			qdisc_qstats_backlog_dec(sch, skb);
-			kfree_skb(skb);
-		}
-
-		INIT_LIST_HEAD(&flow->flowchain);
-		codel_vars_init(&flow->cvars);
-	}
-	memset(q->backlogs, 0, q->flows_cnt * sizeof(u32));
-	sch->q.qlen = 0;
+	while ((skb = fq_codel_dequeue(sch)) != NULL)
+		kfree_skb(skb);
 }
 
 static const struct nla_policy fq_codel_policy[TCA_FQ_CODEL_MAX + 1] = {
@@ -322,7 +304,6 @@ static const struct nla_policy fq_codel_policy[TCA_FQ_CODEL_MAX + 1] = {
 	[TCA_FQ_CODEL_ECN]	= { .type = NLA_U32 },
 	[TCA_FQ_CODEL_FLOWS]	= { .type = NLA_U32 },
 	[TCA_FQ_CODEL_QUANTUM]	= { .type = NLA_U32 },
-	[TCA_FQ_CODEL_CE_THRESHOLD] = { .type = NLA_U32 },
 };
 
 static int fq_codel_change(struct Qdisc *sch, struct nlattr *opt)
@@ -351,12 +332,6 @@ static int fq_codel_change(struct Qdisc *sch, struct nlattr *opt)
 		u64 target = nla_get_u32(tb[TCA_FQ_CODEL_TARGET]);
 
 		q->cparams.target = (target * NSEC_PER_USEC) >> CODEL_SHIFT;
-	}
-
-	if (tb[TCA_FQ_CODEL_CE_THRESHOLD]) {
-		u64 val = nla_get_u32(tb[TCA_FQ_CODEL_CE_THRESHOLD]);
-
-		q->cparams.ce_threshold = (val * NSEC_PER_USEC) >> CODEL_SHIFT;
 	}
 
 	if (tb[TCA_FQ_CODEL_INTERVAL]) {
@@ -420,10 +395,10 @@ static int fq_codel_init(struct Qdisc *sch, struct nlattr *opt)
 	sch->limit = 10*1024;
 	q->flows_cnt = 1024;
 	q->quantum = psched_mtu(qdisc_dev(sch));
-	get_random_bytes(&q->perturbation, sizeof(q->perturbation));
+	q->perturbation = prandom_u32();
 	INIT_LIST_HEAD(&q->new_flows);
 	INIT_LIST_HEAD(&q->old_flows);
-	codel_params_init(&q->cparams, sch);
+	codel_params_init(&q->cparams);
 	codel_stats_init(&q->cstats);
 	q->cparams.ecn = true;
 
@@ -480,11 +455,6 @@ static int fq_codel_dump(struct Qdisc *sch, struct sk_buff *skb)
 			q->flows_cnt))
 		goto nla_put_failure;
 
-	if (q->cparams.ce_threshold != CODEL_DISABLED_THRESHOLD &&
-	    nla_put_u32(skb, TCA_FQ_CODEL_CE_THRESHOLD,
-			codel_time_to_us(q->cparams.ce_threshold)))
-		goto nla_put_failure;
-
 	return nla_nest_end(skb, opts);
 
 nla_put_failure:
@@ -503,7 +473,6 @@ static int fq_codel_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 	st.qdisc_stats.drop_overlimit = q->drop_overlimit;
 	st.qdisc_stats.ecn_mark = q->cstats.ecn_mark;
 	st.qdisc_stats.new_flow_count = q->new_flow_count;
-	st.qdisc_stats.ce_mark = q->cstats.ce_mark;
 
 	list_for_each(pos, &q->new_flows)
 		st.qdisc_stats.new_flows_len++;
@@ -636,7 +605,7 @@ static struct Qdisc_ops fq_codel_qdisc_ops __read_mostly = {
 	.enqueue	=	fq_codel_enqueue,
 	.dequeue	=	fq_codel_dequeue,
 	.peek		=	qdisc_peek_dequeued,
-	.drop		=	fq_codel_qdisc_drop,
+	.drop		=	fq_codel_drop,
 	.init		=	fq_codel_init,
 	.reset		=	fq_codel_reset,
 	.destroy	=	fq_codel_destroy,

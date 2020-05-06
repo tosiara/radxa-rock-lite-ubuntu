@@ -21,6 +21,7 @@
 #include <linux/audit.h>
 #include <linux/syscalls.h>
 #include <linux/fcntl.h>
+#include <linux/aio.h>
 
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
@@ -178,9 +179,9 @@ EXPORT_SYMBOL(generic_pipe_buf_steal);
  *	in the tee() system call, when we duplicate the buffers in one
  *	pipe into another.
  */
-bool generic_pipe_buf_get(struct pipe_inode_info *pipe, struct pipe_buffer *buf)
+void generic_pipe_buf_get(struct pipe_inode_info *pipe, struct pipe_buffer *buf)
 {
-	return try_get_page(buf->page);
+	page_cache_get(buf->page);
 }
 EXPORT_SYMBOL(generic_pipe_buf_get);
 
@@ -372,17 +373,18 @@ pipe_write(struct kiocb *iocb, struct iov_iter *from)
 		int offset = buf->offset + buf->len;
 
 		if (ops->can_merge && offset + chars <= PAGE_SIZE) {
-			ret = ops->confirm(pipe, buf);
-			if (ret)
+			int error = ops->confirm(pipe, buf);
+			if (error)
 				goto out;
 
 			ret = copy_page_from_iter(buf->page, offset, chars, from);
 			if (unlikely(ret < chars)) {
-				ret = -EFAULT;
+				error = -EFAULT;
 				goto out;
 			}
 			do_wakeup = 1;
-			buf->len += ret;
+			buf->len += chars;
+			ret = chars;
 			if (!iov_iter_count(from))
 				goto out;
 		}
@@ -666,7 +668,7 @@ static struct vfsmount *pipe_mnt __read_mostly;
 static char *pipefs_dname(struct dentry *dentry, char *buffer, int buflen)
 {
 	return dynamic_dname(dentry, buffer, buflen, "pipe:[%lu]",
-				d_inode(dentry)->i_ino);
+				dentry->d_inode->i_ino);
 }
 
 static const struct dentry_operations pipefs_dentry_operations = {
@@ -732,20 +734,17 @@ int create_pipe_files(struct file **res, int flags)
 
 	d_instantiate(path.dentry, inode);
 
+	err = -ENFILE;
 	f = alloc_file(&path, FMODE_WRITE, &pipefifo_fops);
-	if (IS_ERR(f)) {
-		err = PTR_ERR(f);
+	if (IS_ERR(f))
 		goto err_dentry;
-	}
 
 	f->f_flags = O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT));
 	f->private_data = inode->i_pipe;
 
 	res[0] = alloc_file(&path, FMODE_READ, &pipefifo_fops);
-	if (IS_ERR(res[0])) {
-		err = PTR_ERR(res[0]);
+	if (IS_ERR(res[0]))
 		goto err_file;
-	}
 
 	path_get(&path);
 	res[0]->private_data = inode->i_pipe;
@@ -988,7 +987,9 @@ err:
 const struct file_operations pipefifo_fops = {
 	.open		= fifo_open,
 	.llseek		= no_llseek,
+	.read		= new_sync_read,
 	.read_iter	= pipe_read,
+	.write		= new_sync_write,
 	.write_iter	= pipe_write,
 	.poll		= pipe_poll,
 	.unlocked_ioctl	= pipe_ioctl,

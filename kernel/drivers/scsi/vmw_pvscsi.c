@@ -504,11 +504,33 @@ static void pvscsi_setup_all_rings(const struct pvscsi_adapter *adapter)
 	}
 }
 
-static int pvscsi_change_queue_depth(struct scsi_device *sdev, int qdepth)
+static int pvscsi_change_queue_depth(struct scsi_device *sdev,
+				     int qdepth,
+				     int reason)
 {
+	int max_depth;
+	struct Scsi_Host *shost = sdev->host;
+
+	if (reason != SCSI_QDEPTH_DEFAULT)
+		/*
+		 * We support only changing default.
+		 */
+		return -EOPNOTSUPP;
+
+	max_depth = shost->can_queue;
 	if (!sdev->tagged_supported)
-		qdepth = 1;
-	return scsi_change_queue_depth(sdev, qdepth);
+		max_depth = 1;
+	if (qdepth > max_depth)
+		qdepth = max_depth;
+	scsi_adjust_queue_depth(sdev, scsi_get_tag_type(sdev), qdepth);
+
+	if (sdev->inquiry_len > 7)
+		sdev_printk(KERN_INFO, sdev,
+			    "qdepth(%d), tagged(%d), simple(%d), ordered(%d), scsi_level(%d), cmd_que(%d)\n",
+			    sdev->queue_depth, sdev->tagged_supported,
+			    sdev->simple_tags, sdev->ordered_tags,
+			    sdev->scsi_level, (sdev->inquiry[7] & 2) >> 1);
+	return sdev->queue_depth;
 }
 
 /*
@@ -598,7 +620,7 @@ static void pvscsi_complete_request(struct pvscsi_adapter *adapter,
 			break;
 
 		case BTSTAT_ABORTQUEUE:
-			cmd->result = (DID_ABORT << 16);
+			cmd->result = (DID_BUS_BUSY << 16);
 			break;
 
 		case BTSTAT_SCSIPARITY:
@@ -706,6 +728,10 @@ static int pvscsi_queue_ring(struct pvscsi_adapter *adapter,
 	memcpy(e->cdb, cmd->cmnd, e->cdbLen);
 
 	e->tag = SIMPLE_QUEUE_TAG;
+	if (sdev->tagged_supported &&
+	    (cmd->tag == HEAD_OF_QUEUE_TAG ||
+	     cmd->tag == ORDERED_QUEUE_TAG))
+		e->tag = cmd->tag;
 
 	if (cmd->sc_data_direction == DMA_FROM_DEVICE)
 		e->flags = PVSCSI_FLAG_CMD_DIR_TOHOST;
@@ -733,7 +759,6 @@ static int pvscsi_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd
 	struct pvscsi_adapter *adapter = shost_priv(host);
 	struct pvscsi_ctx *ctx;
 	unsigned long flags;
-	unsigned char op;
 
 	spin_lock_irqsave(&adapter->hw_lock, flags);
 
@@ -746,14 +771,13 @@ static int pvscsi_queue_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd
 	}
 
 	cmd->scsi_done = done;
-	op = cmd->cmnd[0];
 
 	dev_dbg(&cmd->device->sdev_gendev,
-		"queued cmd %p, ctx %p, op=%x\n", cmd, ctx, op);
+		"queued cmd %p, ctx %p, op=%x\n", cmd, ctx, cmd->cmnd[0]);
 
 	spin_unlock_irqrestore(&adapter->hw_lock, flags);
 
-	pvscsi_kick_io(adapter, op);
+	pvscsi_kick_io(adapter, cmd->cmnd[0]);
 
 	return 0;
 }

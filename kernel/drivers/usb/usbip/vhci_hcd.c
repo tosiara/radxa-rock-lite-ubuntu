@@ -220,19 +220,13 @@ done:
 
 static inline void hub_descriptor(struct usb_hub_descriptor *desc)
 {
-	int width;
-
 	memset(desc, 0, sizeof(*desc));
-	desc->bDescriptorType = USB_DT_HUB;
-	desc->wHubCharacteristics = cpu_to_le16(
-		HUB_CHAR_INDV_PORT_LPSM | HUB_CHAR_COMMON_OCPM);
-
+	desc->bDescriptorType = 0x29;
+	desc->bDescLength = 9;
+	desc->wHubCharacteristics = (__constant_cpu_to_le16(0x0001));
 	desc->bNbrPorts = VHCI_NPORTS;
-	BUILD_BUG_ON(VHCI_NPORTS > USB_MAXCHILDREN);
-	width = desc->bNbrPorts / 8 + 1;
-	desc->bDescLength = USB_DT_HUB_NONVAR_SIZE + 2 * width;
-	memset(&desc->u.hs.DeviceRemovable[0], 0, width);
-	memset(&desc->u.hs.DeviceRemovable[width], 0xff, width);
+	desc->u.hs.DeviceRemovable[0] = 0xff;
+	desc->u.hs.DeviceRemovable[1] = 0xff;
 }
 
 static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
@@ -303,7 +297,6 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 			default:
 				break;
 			}
-			break;
 		default:
 			usbip_dbg_vhci_rh(" ClearPortFeature: default %x\n",
 					  wValue);
@@ -530,7 +523,8 @@ static int vhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 			dev_info(dev, "SetAddress Request (%d) to port %d\n",
 				 ctrlreq->wValue, vdev->rhport);
 
-			usb_put_dev(vdev->udev);
+			if (vdev->udev)
+				usb_put_dev(vdev->udev);
 			vdev->udev = usb_get_dev(urb->dev);
 
 			spin_lock(&vdev->ud.lock);
@@ -550,7 +544,8 @@ static int vhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 				usbip_dbg_vhci_hc(
 					"Not yet?:Get_Descriptor to device 0 (get max pipe size)\n");
 
-			usb_put_dev(vdev->udev);
+			if (vdev->udev)
+				usb_put_dev(vdev->udev);
 			vdev->udev = usb_get_dev(urb->dev);
 			goto out;
 
@@ -576,9 +571,7 @@ no_need_xmit:
 	usb_hcd_unlink_urb_from_ep(hcd, urb);
 no_need_unlink:
 	spin_unlock_irqrestore(&the_controller->lock, flags);
-	if (!ret)
-		usb_hcd_giveback_urb(vhci_to_hcd(the_controller),
-				     urb, urb->status);
+	usb_hcd_giveback_urb(vhci_to_hcd(the_controller), urb, urb->status);
 	return ret;
 }
 
@@ -641,7 +634,7 @@ static int vhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
 		/* URB was never linked! or will be soon given back by
 		 * vhci_rx. */
 		spin_unlock_irqrestore(&the_controller->lock, flags);
-		return -EIDRM;
+		return 0;
 	}
 
 	{
@@ -840,7 +833,8 @@ static void vhci_device_reset(struct usbip_device *ud)
 	vdev->speed  = 0;
 	vdev->devid  = 0;
 
-	usb_put_dev(vdev->udev);
+	if (vdev->udev)
+		usb_put_dev(vdev->udev);
 	vdev->udev = NULL;
 
 	if (ud->tcp_socket) {
@@ -1124,6 +1118,7 @@ static struct platform_driver vhci_driver = {
 	.resume	= vhci_hcd_resume,
 	.driver	= {
 		.name = driver_name,
+		.owner = THIS_MODULE,
 	},
 };
 

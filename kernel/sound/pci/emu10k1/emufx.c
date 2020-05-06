@@ -36,7 +36,6 @@
 #include <linux/init.h>
 #include <linux/mutex.h>
 #include <linux/moduleparam.h>
-#include <linux/nospec.h>
 
 #include <sound/core.h>
 #include <sound/tlv.h>
@@ -778,7 +777,8 @@ static void snd_emu10k1_ctl_private_free(struct snd_kcontrol *kctl)
 	kctl->private_value = 0;
 	list_del(&ctl->list);
 	kfree(ctl);
-	kfree(kctl->tlv.p);
+	if (kctl->tlv.p)
+		kfree(kctl->tlv.p);
 }
 
 static int snd_emu10k1_add_controls(struct snd_emu10k1 *emu,
@@ -1001,8 +1001,6 @@ static int snd_emu10k1_ipcm_poke(struct snd_emu10k1 *emu,
 
 	if (ipcm->substream >= EMU10K1_FX8010_PCM_COUNT)
 		return -EINVAL;
-	ipcm->substream = array_index_nospec(ipcm->substream,
-					     EMU10K1_FX8010_PCM_COUNT);
 	if (ipcm->channels > 32)
 		return -EINVAL;
 	pcm = &emu->fx8010.pcm[ipcm->substream];
@@ -1049,8 +1047,6 @@ static int snd_emu10k1_ipcm_peek(struct snd_emu10k1 *emu,
 
 	if (ipcm->substream >= EMU10K1_FX8010_PCM_COUNT)
 		return -EINVAL;
-	ipcm->substream = array_index_nospec(ipcm->substream,
-					     EMU10K1_FX8010_PCM_COUNT);
 	pcm = &emu->fx8010.pcm[ipcm->substream];
 	mutex_lock(&emu->fx8010.lock);
 	spin_lock_irq(&emu->reg_lock);
@@ -2646,11 +2642,14 @@ static int snd_emu10k1_fx8010_release(struct snd_hwdep * hw, struct file *file)
 	return 0;
 }
 
-int snd_emu10k1_fx8010_new(struct snd_emu10k1 *emu, int device)
+int snd_emu10k1_fx8010_new(struct snd_emu10k1 *emu, int device,
+			   struct snd_hwdep **rhwdep)
 {
 	struct snd_hwdep *hw;
 	int err;
 	
+	if (rhwdep)
+		*rhwdep = NULL;
 	if ((err = snd_hwdep_new(emu->card, "FX8010", device, &hw)) < 0)
 		return err;
 	strcpy(hw->name, "EMU10K1 (FX8010)");
@@ -2659,6 +2658,8 @@ int snd_emu10k1_fx8010_new(struct snd_emu10k1 *emu, int device)
 	hw->ops.ioctl = snd_emu10k1_fx8010_ioctl;
 	hw->ops.release = snd_emu10k1_fx8010_release;
 	hw->private_data = emu;
+	if (rhwdep)
+		*rhwdep = hw;
 	return 0;
 }
 

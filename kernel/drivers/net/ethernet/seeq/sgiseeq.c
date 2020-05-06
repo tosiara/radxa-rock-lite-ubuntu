@@ -792,16 +792,15 @@ static int sgiseeq_probe(struct platform_device *pdev)
 		printk(KERN_ERR "Sgiseeq: Cannot register net device, "
 		       "aborting.\n");
 		err = -ENODEV;
-		goto err_out_free_attrs;
+		goto err_out_free_page;
 	}
 
 	printk(KERN_INFO "%s: %s %pM\n", dev->name, sgiseeqstr, dev->dev_addr);
 
 	return 0;
 
-err_out_free_attrs:
-	dma_free_attrs(&pdev->dev, sizeof(*sp->srings), sp->srings,
-		       sp->srings_dma, DMA_ATTR_NON_CONSISTENT);
+err_out_free_page:
+	free_page((unsigned long) sp->srings);
 err_out_free_dev:
 	free_netdev(dev);
 
@@ -827,6 +826,7 @@ static struct platform_driver sgiseeq_driver = {
 	.remove	= __exit_p(sgiseeq_remove),
 	.driver = {
 		.name	= "sgiseeq",
+		.owner	= THIS_MODULE,
 	}
 };
 

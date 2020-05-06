@@ -9,6 +9,7 @@
 #include <linux/cpuidle.h>
 #include <linux/module.h>
 #include <asm/cpuidle.h>
+#include <asm/proc-fns.h>
 
 #include "common.h"
 #include "cpuidle.h"
@@ -22,14 +23,14 @@ static int imx6q_enter_wait(struct cpuidle_device *dev,
 {
 	spin_lock(&cpuidle_lock);
 	if (++num_idle_cpus == num_online_cpus())
-		imx6_set_lpm(WAIT_UNCLOCKED);
+		imx6q_set_lpm(WAIT_UNCLOCKED);
 	spin_unlock(&cpuidle_lock);
 
 	cpu_do_idle();
 
 	spin_lock(&cpuidle_lock);
 	if (num_idle_cpus-- == num_online_cpus())
-		imx6_set_lpm(WAIT_CLOCKED);
+		imx6q_set_lpm(WAIT_CLOCKED);
 	spin_unlock(&cpuidle_lock);
 
 	return index;
@@ -45,7 +46,8 @@ static struct cpuidle_driver imx6q_cpuidle_driver = {
 		{
 			.exit_latency = 50,
 			.target_residency = 75,
-			.flags = CPUIDLE_FLAG_TIMER_STOP,
+			.flags = CPUIDLE_FLAG_TIME_VALID |
+			         CPUIDLE_FLAG_TIMER_STOP,
 			.enter = imx6q_enter_wait,
 			.name = "WAIT",
 			.desc = "Clock off",

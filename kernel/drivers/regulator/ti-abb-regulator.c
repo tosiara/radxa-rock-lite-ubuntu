@@ -173,14 +173,19 @@ static int ti_abb_wait_txdone(struct device *dev, struct ti_abb *abb)
 	while (timeout++ <= abb->settling_time) {
 		status = ti_abb_check_txdone(abb);
 		if (status)
-			return 0;
+			break;
 
 		udelay(1);
 	}
 
-	dev_warn_ratelimited(dev, "%s:TRANXDONE timeout(%duS) int=0x%08x\n",
-			     __func__, timeout, readl(abb->int_base));
-	return -ETIMEDOUT;
+	if (timeout > abb->settling_time) {
+		dev_warn_ratelimited(dev,
+				     "%s:TRANXDONE timeout(%duS) int=0x%08x\n",
+				     __func__, timeout, readl(abb->int_base));
+		return -ETIMEDOUT;
+	}
+
+	return 0;
 }
 
 /**
@@ -200,14 +205,19 @@ static int ti_abb_clear_all_txdone(struct device *dev, const struct ti_abb *abb)
 
 		status = ti_abb_check_txdone(abb);
 		if (!status)
-			return 0;
+			break;
 
 		udelay(1);
 	}
 
-	dev_warn_ratelimited(dev, "%s:TRANXDONE timeout(%duS) int=0x%08x\n",
-			     __func__, timeout, readl(abb->int_base));
-	return -ETIMEDOUT;
+	if (timeout > abb->settling_time) {
+		dev_warn_ratelimited(dev,
+				     "%s:TRANXDONE timeout(%duS) int=0x%08x\n",
+				     __func__, timeout, readl(abb->int_base));
+		return -ETIMEDOUT;
+	}
+
+	return 0;
 }
 
 /**
@@ -827,8 +837,7 @@ skip_opt:
 		return -EINVAL;
 	}
 
-	initdata = of_get_regulator_init_data(dev, pdev->dev.of_node,
-					      &abb->rdesc);
+	initdata = of_get_regulator_init_data(dev, pdev->dev.of_node);
 	if (!initdata) {
 		dev_err(dev, "%s: Unable to alloc regulator init data\n",
 			__func__);
@@ -882,6 +891,7 @@ static struct platform_driver ti_abb_driver = {
 	.probe = ti_abb_probe,
 	.driver = {
 		   .name = "ti_abb",
+		   .owner = THIS_MODULE,
 		   .of_match_table = of_match_ptr(ti_abb_of_match),
 		   },
 };

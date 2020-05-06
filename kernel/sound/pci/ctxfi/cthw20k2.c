@@ -26,6 +26,12 @@
 #include "cthw20k2.h"
 #include "ct20k2reg.h"
 
+#if BITS_PER_LONG == 32
+#define CT_XFI_DMA_MASK		DMA_BIT_MASK(32) /* 32 bit PTE */
+#else
+#define CT_XFI_DMA_MASK		DMA_BIT_MASK(64) /* 64 bit PTE */
+#endif
+
 struct hw20k2 {
 	struct hw hw;
 	/* for i2c */
@@ -2023,18 +2029,19 @@ static int hw_card_start(struct hw *hw)
 	int err = 0;
 	struct pci_dev *pci = hw->pci;
 	unsigned int gctl;
-	const unsigned int dma_bits = BITS_PER_LONG;
 
 	err = pci_enable_device(pci);
 	if (err < 0)
 		return err;
 
 	/* Set DMA transfer mask */
-	if (!dma_set_mask(&pci->dev, DMA_BIT_MASK(dma_bits))) {
-		dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(dma_bits));
-	} else {
-		dma_set_mask(&pci->dev, DMA_BIT_MASK(32));
-		dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(32));
+	if (pci_set_dma_mask(pci, CT_XFI_DMA_MASK) < 0 ||
+	    pci_set_consistent_dma_mask(pci, CT_XFI_DMA_MASK) < 0) {
+		dev_err(hw->card->dev,
+			"architecture does not support PCI busmaster DMA with mask 0x%llx\n",
+			CT_XFI_DMA_MASK);
+		err = -ENXIO;
+		goto error1;
 	}
 
 	if (!hw->io_base) {
@@ -2103,7 +2110,10 @@ static int hw_card_shutdown(struct hw *hw)
 		free_irq(hw->irq, hw);
 
 	hw->irq	= -1;
-	iounmap(hw->mem_base);
+
+	if (hw->mem_base)
+		iounmap(hw->mem_base);
+
 	hw->mem_base = NULL;
 
 	if (hw->io_base)
@@ -2199,12 +2209,24 @@ static int hw_card_init(struct hw *hw, struct card_conf *info)
 #ifdef CONFIG_PM_SLEEP
 static int hw_suspend(struct hw *hw)
 {
+	struct pci_dev *pci = hw->pci;
+
 	hw_card_stop(hw);
+
+	pci_disable_device(pci);
+	pci_save_state(pci);
+	pci_set_power_state(pci, PCI_D3hot);
+
 	return 0;
 }
 
 static int hw_resume(struct hw *hw, struct card_conf *info)
 {
+	struct pci_dev *pci = hw->pci;
+
+	pci_set_power_state(pci, PCI_D0);
+	pci_restore_state(pci);
+
 	/* Re-initialize card hardware. */
 	return hw_card_init(hw, info);
 }

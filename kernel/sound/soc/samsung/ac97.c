@@ -288,7 +288,7 @@ static int s3c_ac97_mic_dai_probe(struct snd_soc_dai *dai)
 static struct snd_soc_dai_driver s3c_ac97_dai[] = {
 	[S3C_AC97_DAI_PCM] = {
 		.name =	"samsung-ac97",
-		.bus_control = true,
+		.ac97_control = 1,
 		.playback = {
 			.stream_name = "AC97 Playback",
 			.channels_min = 2,
@@ -306,7 +306,7 @@ static struct snd_soc_dai_driver s3c_ac97_dai[] = {
 	},
 	[S3C_AC97_DAI_MIC] = {
 		.name = "samsung-ac97-mic",
-		.bus_control = true,
+		.ac97_control = 1,
 		.capture = {
 			.stream_name = "AC97 Mic Capture",
 			.channels_min = 1,
@@ -424,6 +424,7 @@ static struct platform_driver s3c_ac97_driver = {
 	.remove = s3c_ac97_remove,
 	.driver = {
 		.name = "samsung-ac97",
+		.owner = THIS_MODULE,
 	},
 };
 

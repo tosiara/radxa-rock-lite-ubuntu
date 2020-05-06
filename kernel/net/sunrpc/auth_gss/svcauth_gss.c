@@ -51,7 +51,7 @@
 #include "gss_rpc_upcall.h"
 
 
-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
+#ifdef RPC_DEBUG
 # define RPCDBG_FACILITY	RPCDBG_AUTH
 #endif
 
@@ -463,8 +463,6 @@ static int rsc_parse(struct cache_detail *cd,
 		/* number of additional gid's */
 		if (get_int(&mesg, &N))
 			goto out;
-		if (N < 0 || N > NGROUPS_MAX)
-			goto out;
 		status = -ENOMEM;
 		rsci.cred.cr_group_info = groups_alloc(N);
 		if (rsci.cred.cr_group_info == NULL)
@@ -481,7 +479,6 @@ static int rsc_parse(struct cache_detail *cd,
 				goto out;
 			GROUP_AT(rsci.cred.cr_group_info, i) = kgid;
 		}
-		groups_sort(rsci.cred.cr_group_info);
 
 		/* mech name */
 		len = qword_get(&mesg, buf, mlen);
@@ -889,7 +886,7 @@ unwrap_priv_data(struct svc_rqst *rqstp, struct xdr_buf *buf, u32 seq, struct gs
 	u32 priv_len, maj_stat;
 	int pad, saved_len, remaining_len, offset;
 
-	clear_bit(RQ_SPLICE_OK, &rqstp->rq_flags);
+	rqstp->rq_splice_ok = false;
 
 	priv_len = svc_getnl(&buf->head[0]);
 	if (rqstp->rq_deferred) {
@@ -1173,7 +1170,6 @@ static int gss_proxy_save_rsc(struct cache_detail *cd,
 		dprintk("RPC:       No creds found!\n");
 		goto out;
 	} else {
-		struct timespec64 boot;
 
 		/* steal creds */
 		rsci.cred = ud->creds;
@@ -1194,9 +1190,6 @@ static int gss_proxy_save_rsc(struct cache_detail *cd,
 						&expiry, GFP_KERNEL);
 		if (status)
 			goto out;
-
-		getboottime64(&boot);
-		expiry -= boot.tv_sec;
 	}
 
 	rsci.h.expiry_time = expiry;
@@ -1486,7 +1479,7 @@ svcauth_gss_accept(struct svc_rqst *rqstp, __be32 *authp)
 	case RPC_GSS_PROC_DESTROY:
 		if (gss_write_verf(rqstp, rsci->mechctx, gc->gc_seq))
 			goto auth_err;
-		rsci->h.expiry_time = seconds_since_boot();
+		rsci->h.expiry_time = get_seconds();
 		set_bit(CACHE_NEGATIVE, &rsci->h.flags);
 		if (resv->iov_len + 4 > PAGE_SIZE)
 			goto drop;

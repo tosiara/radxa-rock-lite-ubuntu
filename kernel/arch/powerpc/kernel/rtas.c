@@ -401,7 +401,7 @@ static char *__fetch_rtas_last_error(char *altbuf)
 			buf = altbuf;
 		} else {
 			buf = rtas_err_buf;
-			if (slab_is_available())
+			if (mem_init_done)
 				buf = kmalloc(RTAS_ERROR_LOG_MAX, GFP_ATOMIC);
 		}
 		if (buf)
@@ -461,7 +461,7 @@ int rtas_call(int token, int nargs, int nret, int *outputs, ...)
 
 	if (buff_copy) {
 		log_error(buff_copy, ERR_TYPE_RTAS_LOG, 0);
-		if (slab_is_available())
+		if (mem_init_done)
 			kfree(buff_copy);
 	}
 	return ret;
@@ -478,9 +478,8 @@ unsigned int rtas_busy_delay_time(int status)
 
 	if (status == RTAS_BUSY) {
 		ms = 1;
-	} else if (status >= RTAS_EXTENDED_DELAY_MIN &&
-		   status <= RTAS_EXTENDED_DELAY_MAX) {
-		order = status - RTAS_EXTENDED_DELAY_MIN;
+	} else if (status >= 9900 && status <= 9905) {
+		order = status - 9900;
 		for (ms = 1; order > 0; order--)
 			ms *= 10;
 	}
@@ -659,8 +658,7 @@ int rtas_set_indicator_fast(int indicator, int index, int new_value)
 
 	rc = rtas_call(token, 3, 1, NULL, indicator, index, new_value);
 
-	WARN_ON(rc == RTAS_BUSY || (rc >= RTAS_EXTENDED_DELAY_MIN &&
-				    rc <= RTAS_EXTENDED_DELAY_MAX));
+	WARN_ON(rc == -2 || (rc >= 9900 && rc <= 9905));
 
 	if (rc < 0)
 		return rtas_error_rc(rc);
@@ -857,17 +855,15 @@ static int rtas_cpu_state_change_mask(enum rtas_cpu_state state,
 		return 0;
 
 	for_each_cpu(cpu, cpus) {
-		struct device *dev = get_cpu_device(cpu);
-
 		switch (state) {
 		case DOWN:
-			cpuret = device_offline(dev);
+			cpuret = cpu_down(cpu);
 			break;
 		case UP:
-			cpuret = device_online(dev);
+			cpuret = cpu_up(cpu);
 			break;
 		}
-		if (cpuret < 0) {
+		if (cpuret) {
 			pr_debug("%s: cpu_%s for cpu#%d returned %d.\n",
 					__func__,
 					((state == UP) ? "up" : "down"),
@@ -918,7 +914,7 @@ int rtas_offline_cpus_mask(cpumask_var_t cpus)
 }
 EXPORT_SYMBOL(rtas_offline_cpus_mask);
 
-int rtas_ibm_suspend_me(u64 handle)
+int rtas_ibm_suspend_me(struct rtas_args *args)
 {
 	long state;
 	long rc;
@@ -932,7 +928,8 @@ int rtas_ibm_suspend_me(u64 handle)
 		return -ENOSYS;
 
 	/* Make sure the state is valid */
-	rc = plpar_hcall(H_VASI_STATE, retbuf, handle);
+	rc = plpar_hcall(H_VASI_STATE, retbuf,
+			 ((u64)args->args[0] << 32) | args->args[1]);
 
 	state = retbuf[0];
 
@@ -940,11 +937,13 @@ int rtas_ibm_suspend_me(u64 handle)
 		printk(KERN_ERR "rtas_ibm_suspend_me: vasi_state returned %ld\n",rc);
 		return rc;
 	} else if (state == H_VASI_ENABLED) {
-		return -EAGAIN;
+		args->args[args->nargs] = RTAS_NOT_SUSPENDABLE;
+		return 0;
 	} else if (state != H_VASI_SUSPENDING) {
 		printk(KERN_ERR "rtas_ibm_suspend_me: vasi_state returned state %ld\n",
 		       state);
-		return -EIO;
+		args->args[args->nargs] = -1;
+		return 0;
 	}
 
 	if (!alloc_cpumask_var(&offline_mask, GFP_TEMPORARY))
@@ -956,8 +955,6 @@ int rtas_ibm_suspend_me(u64 handle)
 	data.token = rtas_token("ibm,suspend-me");
 	data.complete = &done;
 
-	lock_device_hotplug();
-
 	/* All present CPUs must be online */
 	cpumask_andnot(offline_mask, cpu_present_mask, cpu_online_mask);
 	cpuret = rtas_online_cpus_mask(offline_mask);
@@ -967,7 +964,6 @@ int rtas_ibm_suspend_me(u64 handle)
 		goto out;
 	}
 
-	cpu_hotplug_disable();
 	stop_topology_update();
 
 	/* Call function on all CPUs.  One of us will make the
@@ -982,7 +978,6 @@ int rtas_ibm_suspend_me(u64 handle)
 		printk(KERN_ERR "Error doing global join\n");
 
 	start_topology_update();
-	cpu_hotplug_enable();
 
 	/* Take down CPUs not online prior to suspend */
 	cpuret = rtas_offline_cpus_mask(offline_mask);
@@ -991,12 +986,11 @@ int rtas_ibm_suspend_me(u64 handle)
 				__func__);
 
 out:
-	unlock_device_hotplug();
 	free_cpumask_var(offline_mask);
 	return atomic_read(&data.error);
 }
 #else /* CONFIG_PPC_PSERIES */
-int rtas_ibm_suspend_me(u64 handle)
+int rtas_ibm_suspend_me(struct rtas_args *args)
 {
 	return -ENOSYS;
 }
@@ -1046,6 +1040,7 @@ asmlinkage int ppc_rtas(struct rtas_args __user *uargs)
 	unsigned long flags;
 	char *buff_copy, *errbuf = NULL;
 	int nargs, nret, token;
+	int rc;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -1078,20 +1073,8 @@ asmlinkage int ppc_rtas(struct rtas_args __user *uargs)
 
 	/* Need to handle ibm,suspend_me call specially */
 	if (token == ibm_suspend_me_token) {
-
-		/*
-		 * rtas_ibm_suspend_me assumes the streamid handle is in cpu
-		 * endian, or at least the hcall within it requires it.
-		 */
-		int rc = 0;
-		u64 handle = ((u64)be32_to_cpu(args.args[0]) << 32)
-		              | be32_to_cpu(args.args[1]);
-		rc = rtas_ibm_suspend_me(handle);
-		if (rc == -EAGAIN)
-			args.rets[0] = cpu_to_be32(RTAS_NOT_SUSPENDABLE);
-		else if (rc == -EIO)
-			args.rets[0] = cpu_to_be32(-1);
-		else if (rc)
+		rc = rtas_ibm_suspend_me(&args);
+		if (rc)
 			return rc;
 		goto copy_return;
 	}
@@ -1128,8 +1111,8 @@ asmlinkage int ppc_rtas(struct rtas_args __user *uargs)
 }
 
 /*
- * Call early during boot, before mem init, to retrieve the RTAS
- * information from the device-tree and allocate the RMO buffer for userland
+ * Call early during boot, before mem init or bootmem, to retrieve the RTAS
+ * informations from the device-tree and allocate the RMO buffer for userland
  * accesses.
  */
 void __init rtas_initialize(void)

@@ -160,7 +160,6 @@ static ssize_t remove_id_store(struct device_driver *driver, const char *buf,
 	spin_lock(&usb_driver->dynids.lock);
 	list_for_each_entry_safe(dynid, n, &usb_driver->dynids.list, node) {
 		struct usb_device_id *id = &dynid->id;
-
 		if ((id->idVendor == idVendor) &&
 		    (id->idProduct == idProduct)) {
 			list_del(&dynid->node);
@@ -296,10 +295,6 @@ static int usb_probe_interface(struct device *dev)
 	if (udev->authorized == 0) {
 		dev_err(&intf->dev, "Device is not authorized for usage\n");
 		return error;
-	} else if (intf->authorized == 0) {
-		dev_err(&intf->dev, "Interface %d is not authorized for usage\n",
-				intf->altsetting->desc.bInterfaceNumber);
-		return error;
 	}
 
 	id = usb_match_dynamic_id(intf, driver);
@@ -425,10 +420,12 @@ static int usb_unbind_interface(struct device *dev)
 		if (ep->streams == 0)
 			continue;
 		if (j == 0) {
-			eps = kmalloc_array(USB_MAXENDPOINTS, sizeof(void *),
+			eps = kmalloc(USB_MAXENDPOINTS * sizeof(void *),
 				      GFP_KERNEL);
-			if (!eps)
+			if (!eps) {
+				dev_warn(dev, "oom, leaking streams\n");
 				break;
+			}
 		}
 		eps[j++] = ep;
 	}
@@ -511,10 +508,6 @@ int usb_driver_claim_interface(struct usb_driver *driver,
 	dev = &iface->dev;
 	if (dev->driver)
 		return -EBUSY;
-
-	/* reject claim if interface is not authorized */
-	if (!iface->authorized)
-		return -ENODEV;
 
 	udev = interface_to_usbdev(iface);
 
@@ -1323,24 +1316,6 @@ static int usb_suspend_both(struct usb_device *udev, pm_message_t msg)
 		 */
 		if (udev->parent && !PMSG_IS_AUTO(msg))
 			status = 0;
-
-		/*
-		 * If the device is inaccessible, don't try to resume
-		 * suspended interfaces and just return the error.
-		 */
-		if (status && status != -EBUSY) {
-			int err;
-			u16 devstat;
-
-			err = usb_get_status(udev, USB_RECIP_DEVICE, 0,
-					     &devstat);
-			if (err) {
-				dev_err(&udev->dev,
-					"Failed to suspend device, error %d\n",
-					status);
-				goto done;
-			}
-		}
 	}
 
 	/* If the suspend failed, resume interfaces that did get suspended */
@@ -1505,6 +1480,10 @@ int usb_resume(struct device *dev, pm_message_t msg)
 		status = 0;
 	return status;
 }
+
+#endif /* CONFIG_PM */
+
+#ifdef CONFIG_PM_RUNTIME
 
 /**
  * usb_enable_autosuspend - allow a USB device to be autosuspended
@@ -1875,10 +1854,13 @@ int usb_runtime_idle(struct device *dev)
 	return -EBUSY;
 }
 
-static int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable)
+int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable)
 {
 	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
 	int ret = -EPERM;
+
+	if (enable && !udev->usb2_hw_lpm_allowed)
+		return 0;
 
 	if (hcd->driver->set_usb2_hw_lpm) {
 		ret = hcd->driver->set_usb2_hw_lpm(hcd, udev, enable);
@@ -1889,25 +1871,7 @@ static int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable)
 	return ret;
 }
 
-int usb_enable_usb2_hardware_lpm(struct usb_device *udev)
-{
-	if (!udev->usb2_hw_lpm_capable ||
-	    !udev->usb2_hw_lpm_allowed ||
-	    udev->usb2_hw_lpm_enabled)
-		return 0;
-
-	return usb_set_usb2_hardware_lpm(udev, 1);
-}
-
-int usb_disable_usb2_hardware_lpm(struct usb_device *udev)
-{
-	if (!udev->usb2_hw_lpm_enabled)
-		return 0;
-
-	return usb_set_usb2_hardware_lpm(udev, 0);
-}
-
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_RUNTIME */
 
 struct bus_type usb_bus_type = {
 	.name =		"usb",

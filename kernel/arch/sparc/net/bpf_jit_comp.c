@@ -763,7 +763,7 @@ cond_branch:			f_offset = addrs[i + filter[i].jf];
 				if (unlikely(proglen + ilen > oldproglen)) {
 					pr_err("bpb_jit_compile fatal error\n");
 					kfree(addrs);
-					module_memfree(image);
+					module_free(NULL, image);
 					return;
 				}
 				memcpy(image + proglen, temp, ilen);
@@ -794,12 +794,12 @@ cond_branch:			f_offset = addrs[i + filter[i].jf];
 	}
 
 	if (bpf_jit_enable > 1)
-		bpf_jit_dump(flen, proglen, pass + 1, image);
+		bpf_jit_dump(flen, proglen, pass, image);
 
 	if (image) {
 		bpf_flush_icache(image, image + proglen);
 		fp->bpf_func = (void *)image;
-		fp->jited = 1;
+		fp->jited = true;
 	}
 out:
 	kfree(addrs);
@@ -809,7 +809,7 @@ out:
 void bpf_jit_free(struct bpf_prog *fp)
 {
 	if (fp->jited)
-		module_memfree(fp->bpf_func);
+		module_free(NULL, fp->bpf_func);
 
 	bpf_prog_unlock_free(fp);
 }

@@ -212,11 +212,11 @@ static void s5pv210_set_refresh(enum s5pv210_dmc_port ch, unsigned long freq)
 	/* Find current DRAM frequency */
 	tmp = s5pv210_dram_conf[ch].freq;
 
-	tmp /= freq;
+	do_div(tmp, freq);
 
 	tmp1 = s5pv210_dram_conf[ch].refresh;
 
-	tmp1 /= tmp;
+	do_div(tmp1, tmp);
 
 	__raw_writel(tmp1, reg);
 }
@@ -656,7 +656,8 @@ static int s5pv210_cpufreq_probe(struct platform_device *pdev)
 static struct platform_driver s5pv210_cpufreq_platdrv = {
 	.driver = {
 		.name	= "s5pv210-cpufreq",
+		.owner	= THIS_MODULE,
 	},
 	.probe = s5pv210_cpufreq_probe,
 };
-builtin_platform_driver(s5pv210_cpufreq_platdrv);
+module_platform_driver(s5pv210_cpufreq_platdrv);

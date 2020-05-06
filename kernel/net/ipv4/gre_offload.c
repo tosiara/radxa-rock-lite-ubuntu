@@ -155,7 +155,7 @@ static struct sk_buff **gre_gro_receive(struct sk_buff **head,
 
 	rcu_read_lock();
 	ptype = gro_find_receive_by_type(type);
-	if (!ptype)
+	if (ptype == NULL)
 		goto out_unlock;
 
 	grehlen = GRE_HEADER_SECTION;
@@ -219,7 +219,7 @@ static struct sk_buff **gre_gro_receive(struct sk_buff **head,
 	/* Adjusted NAPI_GRO_CB(skb)->csum after skb_gro_pull()*/
 	skb_gro_postpull_rcsum(skb, greh, grehlen);
 
-	pp = call_gro_receive(ptype->callbacks.gro_receive, head, skb);
+	pp = ptype->callbacks.gro_receive(head, skb);
 
 out_unlock:
 	rcu_read_unlock();
@@ -249,7 +249,7 @@ static int gre_gro_complete(struct sk_buff *skb, int nhoff)
 
 	rcu_read_lock();
 	ptype = gro_find_complete_by_type(type);
-	if (ptype)
+	if (ptype != NULL)
 		err = ptype->callbacks.gro_complete(skb, nhoff + grehlen);
 
 	rcu_read_unlock();

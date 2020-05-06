@@ -146,9 +146,9 @@ _GLOBAL(tm_reclaim)
 
 	addi	r7, r3, THREAD_TRANSACT_VRSTATE
 	SAVE_32VRS(0, r6, r7)	/* r6 scratch, r7 transact vr state */
-	mfvscr	v0
+	mfvscr	vr0
 	li	r6, VRSTATE_VSCR
-	stvx	v0, r7, r6
+	stvx	vr0, r7, r6
 dont_backup_vec:
 	mfspr	r0, SPRN_VRSAVE
 	std	r0, THREAD_TRANSACT_VRSAVE(r3)
@@ -316,7 +316,7 @@ dont_backup_fp:
 	ld	r2, STK_GOT(r1)
 
 	/* Load CPU's default DSCR */
-	ld	r0, PACA_DSCR_DEFAULT(r13)
+	ld	r0, PACA_DSCR(r13)
 	mtspr	SPRN_DSCR, r0
 
 	blr
@@ -352,8 +352,6 @@ _GLOBAL(__tm_recheckpoint)
 	 */
 	subi	r7, r7, STACK_FRAME_OVERHEAD
 
-	SET_SCRATCH0(r1)
-
 	mfmsr	r6
 	/* R4 = original MSR to indicate whether thread used FP/Vector etc. */
 
@@ -382,8 +380,8 @@ _GLOBAL(__tm_recheckpoint)
 
 	addi	r8, r3, THREAD_VRSTATE
 	li	r5, VRSTATE_VSCR
-	lvx	v0, r8, r5
-	mtvscr	v0
+	lvx	vr0, r8, r5
+	mtvscr	vr0
 	REST_32VRS(0, r5, r8)			/* r5 scratch, r8 ptr */
 dont_restore_vec:
 	ld	r5, THREAD_VRSAVE(r3)
@@ -482,6 +480,7 @@ restore_gprs:
 	 * until we turn MSR RI back on.
 	 */
 
+	SET_SCRATCH0(r1)
 	ld	r5, -8(r1)
 	ld	r1, -16(r1)
 
@@ -514,7 +513,7 @@ restore_gprs:
 	ld	r2, STK_GOT(r1)
 
 	/* Load CPU's default DSCR */
-	ld	r0, PACA_DSCR_DEFAULT(r13)
+	ld	r0, PACA_DSCR(r13)
 	mtspr	SPRN_DSCR, r0
 
 	blr

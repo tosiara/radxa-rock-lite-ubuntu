@@ -26,7 +26,6 @@
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
-#include <linux/arm-smccc.h>
 
 #include <asm/checksum.h>
 
@@ -52,9 +51,6 @@ EXPORT_SYMBOL(strnlen);
 EXPORT_SYMBOL(memset);
 EXPORT_SYMBOL(memcpy);
 EXPORT_SYMBOL(memmove);
-EXPORT_SYMBOL(__memset);
-EXPORT_SYMBOL(__memcpy);
-EXPORT_SYMBOL(__memmove);
 EXPORT_SYMBOL(memchr);
 EXPORT_SYMBOL(memcmp);
 
@@ -69,7 +65,3 @@ EXPORT_SYMBOL(test_and_change_bit);
 #ifdef CONFIG_FUNCTION_TRACER
 EXPORT_SYMBOL(_mcount);
 #endif
-
-	/* arm-smccc */
-EXPORT_SYMBOL(arm_smccc_smc);
-EXPORT_SYMBOL(arm_smccc_hvc);

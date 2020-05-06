@@ -25,25 +25,71 @@
 #include <asm/hwcap.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable.h>
-#include <asm/cpufeature.h>
-#include <asm/alternative.h>
 
 #include "proc-macros.S"
 
 #ifdef CONFIG_ARM64_64K_PAGES
 #define TCR_TG_FLAGS	TCR_TG0_64K | TCR_TG1_64K
-#elif defined(CONFIG_ARM64_16K_PAGES)
-#define TCR_TG_FLAGS	TCR_TG0_16K | TCR_TG1_16K
-#else /* CONFIG_ARM64_4K_PAGES */
+#else
 #define TCR_TG_FLAGS	TCR_TG0_4K | TCR_TG1_4K
 #endif
 
+#ifdef CONFIG_SMP
 #define TCR_SMP_FLAGS	TCR_SHARED
+#else
+#define TCR_SMP_FLAGS	0
+#endif
 
 /* PTWs cacheable, inner/outer WBWA */
 #define TCR_CACHE_FLAGS	TCR_IRGN_WBWA | TCR_ORGN_WBWA
 
 #define MAIR(attr, mt)	((attr) << ((mt) * 8))
+
+/*
+ *	cpu_cache_off()
+ *
+ *	Turn the CPU D-cache off.
+ */
+ENTRY(cpu_cache_off)
+	mrs	x0, sctlr_el1
+	bic	x0, x0, #1 << 2			// clear SCTLR.C
+	msr	sctlr_el1, x0
+	isb
+	ret
+ENDPROC(cpu_cache_off)
+
+/*
+ *	cpu_reset(loc)
+ *
+ *	Perform a soft reset of the system.  Put the CPU into the same state
+ *	as it would be if it had been reset, and branch to what would be the
+ *	reset vector. It must be executed with the flat identity mapping.
+ *
+ *	- loc   - location to jump to for soft reset
+ */
+	.align	5
+ENTRY(cpu_reset)
+	mrs	x1, sctlr_el1
+	bic	x1, x1, #1
+	msr	sctlr_el1, x1			// disable the MMU
+	isb
+	ret	x0
+ENDPROC(cpu_reset)
+
+ENTRY(cpu_soft_restart)
+	/* Save address of cpu_reset() and reset address */
+	mov	x19, x0
+	mov	x20, x1
+
+	/* Turn D-cache off */
+	bl	cpu_cache_off
+
+	/* Push out all dirty data, and ensure cache is empty */
+	bl	flush_cache_all
+
+	mov	x0, x20
+	ret	x19
+ENDPROC(cpu_soft_restart)
 
 /*
  *	cpu_do_idle()
@@ -56,7 +102,7 @@ ENTRY(cpu_do_idle)
 	ret
 ENDPROC(cpu_do_idle)
 
-#ifdef CONFIG_CPU_PM
+#ifdef CONFIG_ARM64_CPU_SUSPEND
 /**
  * cpu_do_suspend - save CPU registers context
  *
@@ -110,7 +156,6 @@ ENTRY(cpu_do_resume)
 	msr	cpacr_el1, x6
 	msr	ttbr0_el1, x1
 	msr	ttbr1_el1, x7
-	tcr_set_idmap_t0sz x8, x7
 	msr	tcr_el1, x8
 	msr	vbar_el1, x9
 	msr	mdscr_el1, x10
@@ -119,7 +164,6 @@ ENTRY(cpu_do_resume)
 	 */
 	ubfx	x11, x11, #1, #1
 	msr	oslar_el1, x11
-	reset_pmuserenr_el0 x0			// Disable PMU access from EL0
 	mov	x0, x12
 	dsb	nsh		// Make sure local tlb invalidation completed
 	isb
@@ -135,21 +179,11 @@ ENDPROC(cpu_do_resume)
  *	- pgd_phys - physical address of new TTB
  */
 ENTRY(cpu_do_switch_mm)
-	mmid	x1, x1				// get mm->context.id
+	mmid	w1, x1				// get mm->context.id
 	bfi	x0, x1, #48, #16		// set the ASID
 	msr	ttbr0_el1, x0			// set TTBR0
 	isb
-alternative_if_not ARM64_WORKAROUND_CAVIUM_27456
 	ret
-	nop
-	nop
-	nop
-alternative_else
-	ic	iallu
-	dsb	nsh
-	isb
-	ret
-alternative_endif
 ENDPROC(cpu_do_switch_mm)
 
 	.section ".text.init", #alloc, #execinstr
@@ -161,16 +195,15 @@ ENDPROC(cpu_do_switch_mm)
  *	value of the SCTLR_EL1 register.
  */
 ENTRY(__cpu_setup)
-	tlbi	vmalle1				// Invalidate local TLB
-	dsb	nsh
+	ic	iallu				// I+BTB cache invalidate
+	tlbi	vmalle1is			// invalidate I + D TLBs
+	dsb	ish
 
 	mov	x0, #3 << 20
 	msr	cpacr_el1, x0			// Enable FP/ASIMD
-	mov	x0, #1 << 12			// Reset mdscr_el1 and disable
-	msr	mdscr_el1, x0			// access to the DCC from EL0
+	msr	mdscr_el1, xzr			// Reset mdscr_el1
 	isb					// Unmask debug exceptions now,
 	enable_dbg				// since this is per-cpu
-	reset_pmuserenr_el0 x0			// Disable PMU access from EL0
 	/*
 	 * Memory region attributes for LPAE:
 	 *
@@ -181,14 +214,12 @@ ENTRY(__cpu_setup)
 	 *   DEVICE_GRE		010	00001100
 	 *   NORMAL_NC		011	01000100
 	 *   NORMAL		100	11111111
-	 *   NORMAL_WT		101	10111011
 	 */
 	ldr	x5, =MAIR(0x00, MT_DEVICE_nGnRnE) | \
 		     MAIR(0x04, MT_DEVICE_nGnRE) | \
 		     MAIR(0x0c, MT_DEVICE_GRE) | \
 		     MAIR(0x44, MT_NORMAL_NC) | \
-		     MAIR(0xff, MT_NORMAL) | \
-		     MAIR(0xbb, MT_NORMAL_WT)
+		     MAIR(0xff, MT_NORMAL)
 	msr	mair_el1, x5
 	/*
 	 * Prepare SCTLR
@@ -204,49 +235,25 @@ ENTRY(__cpu_setup)
 	 */
 	ldr	x10, =TCR_TxSZ(VA_BITS) | TCR_CACHE_FLAGS | TCR_SMP_FLAGS | \
 			TCR_TG_FLAGS | TCR_ASID16 | TCR_TBI0
-	tcr_set_idmap_t0sz	x10, x9
-
 	/*
 	 * Read the PARange bits from ID_AA64MMFR0_EL1 and set the IPS bits in
 	 * TCR_EL1.
 	 */
 	mrs	x9, ID_AA64MMFR0_EL1
 	bfi	x10, x9, #32, #3
-#ifdef CONFIG_ARM64_HW_AFDBM
-	/*
-	 * Hardware update of the Access and Dirty bits.
-	 */
-	mrs	x9, ID_AA64MMFR1_EL1
-	and	x9, x9, #0xf
-	cbz	x9, 2f
-	cmp	x9, #2
-	b.lt	1f
-#ifdef CONFIG_ARM64_ERRATUM_1024718
-	/* Disable hardware DBM on Cortex-A55 r0p0, r0p1 & r1p0 */
-	cpu_midr_match MIDR_CORTEX_A55, MIDR_CPU_VAR_REV(0, 0), MIDR_CPU_VAR_REV(1, 0), x1, x2, x3, x4
-	cbnz	x1, 1f
-#endif
-	orr	x10, x10, #TCR_HD		// hardware Dirty flag update
-1:	orr	x10, x10, #TCR_HA		// hardware Access flag update
-2:
-#endif	/* CONFIG_ARM64_HW_AFDBM */
 	msr	tcr_el1, x10
 	ret					// return to head.S
 ENDPROC(__cpu_setup)
 
 	/*
-	 * We set the desired value explicitly, including those of the
-	 * reserved bits. The values of bits EE & E0E were set early in
-	 * el2_setup, which are left untouched below.
-	 *
 	 *                 n n            T
 	 *       U E      WT T UD     US IHBS
 	 *       CE0      XWHW CZ     ME TEEA S
 	 * .... .IEE .... NEAI TE.I ..AD DEN0 ACAM
-	 * 0011 0... 1101 ..0. ..0. 10.. .0.. .... < hardware reserved
-	 * .... .1.. .... 01.1 11.1 ..01 0.01 1101 < software settings
+	 * 0011 0... 1101 ..0. ..0. 10.. .... .... < hardware reserved
+	 * .... .1.. .... 01.1 11.1 ..01 0001 1101 < software settings
 	 */
 	.type	crval, #object
 crval:
-	.word	0xfcffffff			// clear
-	.word	0x34d5d91d			// set
+	.word	0x000802e2			// clear
+	.word	0x0405d11d			// set

@@ -1690,7 +1690,7 @@ static u32 coh901318_get_bytes_left(struct dma_chan *chan)
  * Pauses a transfer without losing data. Enables power save.
  * Use this function in conjunction with coh901318_resume.
  */
-static int coh901318_pause(struct dma_chan *chan)
+static void coh901318_pause(struct dma_chan *chan)
 {
 	u32 val;
 	unsigned long flags;
@@ -1730,13 +1730,12 @@ static int coh901318_pause(struct dma_chan *chan)
 	enable_powersave(cohc);
 
 	spin_unlock_irqrestore(&cohc->lock, flags);
-	return 0;
 }
 
 /* Resumes a transfer that has been stopped via 300_dma_stop(..).
    Power save is handled.
 */
-static int coh901318_resume(struct dma_chan *chan)
+static void coh901318_resume(struct dma_chan *chan)
 {
 	u32 val;
 	unsigned long flags;
@@ -1761,7 +1760,6 @@ static int coh901318_resume(struct dma_chan *chan)
 	}
 
 	spin_unlock_irqrestore(&cohc->lock, flags);
-	return 0;
 }
 
 bool coh901318_filter_id(struct dma_chan *chan, void *chan_id)
@@ -1810,9 +1808,12 @@ static struct dma_chan *coh901318_xlate(struct of_phandle_args *dma_spec,
 static int coh901318_config(struct coh901318_chan *cohc,
 			    struct coh901318_params *param)
 {
+	unsigned long flags;
 	const struct coh901318_params *p;
 	int channel = cohc->id;
 	void __iomem *virtbase = cohc->base->virtbase;
+
+	spin_lock_irqsave(&cohc->lock, flags);
 
 	if (param)
 		p = param;
@@ -1832,6 +1833,8 @@ static int coh901318_config(struct coh901318_chan *cohc,
 
 	coh901318_set_conf(cohc, p->config);
 	coh901318_set_ctrl(cohc, p->ctrl_lli_last);
+
+	spin_unlock_irqrestore(&cohc->lock, flags);
 
 	return 0;
 }
@@ -1960,6 +1963,8 @@ static void dma_tc_handle(struct coh901318_chan *cohc)
 		return;
 	}
 
+	spin_lock(&cohc->lock);
+
 	/*
 	 * When we reach this point, at least one queue item
 	 * should have been moved over from cohc->queue to
@@ -1979,6 +1984,8 @@ static void dma_tc_handle(struct coh901318_chan *cohc)
 	 */
 	if (coh901318_queue_start(cohc) == NULL)
 		cohc->busy = 0;
+
+	spin_unlock(&cohc->lock);
 
 	/*
 	 * This tasklet will remove items from cohc->active
@@ -2107,57 +2114,6 @@ static irqreturn_t dma_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int coh901318_terminate_all(struct dma_chan *chan)
-{
-	unsigned long flags;
-	struct coh901318_chan *cohc = to_coh901318_chan(chan);
-	struct coh901318_desc *cohd;
-	void __iomem *virtbase = cohc->base->virtbase;
-
-	/* The remainder of this function terminates the transfer */
-	coh901318_pause(chan);
-	spin_lock_irqsave(&cohc->lock, flags);
-
-	/* Clear any pending BE or TC interrupt */
-	if (cohc->id < 32) {
-		writel(1 << cohc->id, virtbase + COH901318_BE_INT_CLEAR1);
-		writel(1 << cohc->id, virtbase + COH901318_TC_INT_CLEAR1);
-	} else {
-		writel(1 << (cohc->id - 32), virtbase +
-		       COH901318_BE_INT_CLEAR2);
-		writel(1 << (cohc->id - 32), virtbase +
-		       COH901318_TC_INT_CLEAR2);
-	}
-
-	enable_powersave(cohc);
-
-	while ((cohd = coh901318_first_active_get(cohc))) {
-		/* release the lli allocation*/
-		coh901318_lli_free(&cohc->base->pool, &cohd->lli);
-
-		/* return desc to free-list */
-		coh901318_desc_remove(cohd);
-		coh901318_desc_free(cohc, cohd);
-	}
-
-	while ((cohd = coh901318_first_queued(cohc))) {
-		/* release the lli allocation*/
-		coh901318_lli_free(&cohc->base->pool, &cohd->lli);
-
-		/* return desc to free-list */
-		coh901318_desc_remove(cohd);
-		coh901318_desc_free(cohc, cohd);
-	}
-
-
-	cohc->nbr_active_done = 0;
-	cohc->busy = 0;
-
-	spin_unlock_irqrestore(&cohc->lock, flags);
-
-	return 0;
-}
-
 static int coh901318_alloc_chan_resources(struct dma_chan *chan)
 {
 	struct coh901318_chan	*cohc = to_coh901318_chan(chan);
@@ -2200,7 +2156,7 @@ coh901318_free_chan_resources(struct dma_chan *chan)
 
 	spin_unlock_irqrestore(&cohc->lock, flags);
 
-	coh901318_terminate_all(chan);
+	dmaengine_terminate_all(chan);
 }
 
 
@@ -2505,8 +2461,8 @@ static const struct burst_table burst_sizes[] = {
 	},
 };
 
-static int coh901318_dma_set_runtimeconfig(struct dma_chan *chan,
-					   struct dma_slave_config *config)
+static void coh901318_dma_set_runtimeconfig(struct dma_chan *chan,
+			struct dma_slave_config *config)
 {
 	struct coh901318_chan *cohc = to_coh901318_chan(chan);
 	dma_addr_t addr;
@@ -2526,7 +2482,7 @@ static int coh901318_dma_set_runtimeconfig(struct dma_chan *chan,
 		maxburst = config->dst_maxburst;
 	} else {
 		dev_err(COHC_2_DEV(cohc), "illegal channel mode\n");
-		return -EINVAL;
+		return;
 	}
 
 	dev_dbg(COHC_2_DEV(cohc), "configure channel for %d byte transfers\n",
@@ -2572,7 +2528,7 @@ static int coh901318_dma_set_runtimeconfig(struct dma_chan *chan,
 	default:
 		dev_err(COHC_2_DEV(cohc),
 			"bad runtimeconfig: alien address width\n");
-		return -EINVAL;
+		return;
 	}
 
 	ctrl |= burst_sizes[i].reg;
@@ -2582,12 +2538,84 @@ static int coh901318_dma_set_runtimeconfig(struct dma_chan *chan,
 
 	cohc->addr = addr;
 	cohc->ctrl = ctrl;
+}
+
+static int
+coh901318_control(struct dma_chan *chan, enum dma_ctrl_cmd cmd,
+		  unsigned long arg)
+{
+	unsigned long flags;
+	struct coh901318_chan *cohc = to_coh901318_chan(chan);
+	struct coh901318_desc *cohd;
+	void __iomem *virtbase = cohc->base->virtbase;
+
+	if (cmd == DMA_SLAVE_CONFIG) {
+		struct dma_slave_config *config =
+			(struct dma_slave_config *) arg;
+
+		coh901318_dma_set_runtimeconfig(chan, config);
+		return 0;
+	  }
+
+	if (cmd == DMA_PAUSE) {
+		coh901318_pause(chan);
+		return 0;
+	}
+
+	if (cmd == DMA_RESUME) {
+		coh901318_resume(chan);
+		return 0;
+	}
+
+	if (cmd != DMA_TERMINATE_ALL)
+		return -ENXIO;
+
+	/* The remainder of this function terminates the transfer */
+	coh901318_pause(chan);
+	spin_lock_irqsave(&cohc->lock, flags);
+
+	/* Clear any pending BE or TC interrupt */
+	if (cohc->id < 32) {
+		writel(1 << cohc->id, virtbase + COH901318_BE_INT_CLEAR1);
+		writel(1 << cohc->id, virtbase + COH901318_TC_INT_CLEAR1);
+	} else {
+		writel(1 << (cohc->id - 32), virtbase +
+		       COH901318_BE_INT_CLEAR2);
+		writel(1 << (cohc->id - 32), virtbase +
+		       COH901318_TC_INT_CLEAR2);
+	}
+
+	enable_powersave(cohc);
+
+	while ((cohd = coh901318_first_active_get(cohc))) {
+		/* release the lli allocation*/
+		coh901318_lli_free(&cohc->base->pool, &cohd->lli);
+
+		/* return desc to free-list */
+		coh901318_desc_remove(cohd);
+		coh901318_desc_free(cohc, cohd);
+	}
+
+	while ((cohd = coh901318_first_queued(cohc))) {
+		/* release the lli allocation*/
+		coh901318_lli_free(&cohc->base->pool, &cohd->lli);
+
+		/* return desc to free-list */
+		coh901318_desc_remove(cohd);
+		coh901318_desc_free(cohc, cohd);
+	}
+
+
+	cohc->nbr_active_done = 0;
+	cohc->busy = 0;
+
+	spin_unlock_irqrestore(&cohc->lock, flags);
 
 	return 0;
 }
 
-static void coh901318_base_init(struct dma_device *dma, const int *pick_chans,
-				struct coh901318_base *base)
+void coh901318_base_init(struct dma_device *dma, const int *pick_chans,
+			 struct coh901318_base *base)
 {
 	int chans_i;
 	int i = 0;
@@ -2689,10 +2717,7 @@ static int __init coh901318_probe(struct platform_device *pdev)
 	base->dma_slave.device_prep_slave_sg = coh901318_prep_slave_sg;
 	base->dma_slave.device_tx_status = coh901318_tx_status;
 	base->dma_slave.device_issue_pending = coh901318_issue_pending;
-	base->dma_slave.device_config = coh901318_dma_set_runtimeconfig;
-	base->dma_slave.device_pause = coh901318_pause;
-	base->dma_slave.device_resume = coh901318_resume;
-	base->dma_slave.device_terminate_all = coh901318_terminate_all;
+	base->dma_slave.device_control = coh901318_control;
 	base->dma_slave.dev = &pdev->dev;
 
 	err = dma_async_device_register(&base->dma_slave);
@@ -2712,16 +2737,13 @@ static int __init coh901318_probe(struct platform_device *pdev)
 	base->dma_memcpy.device_prep_dma_memcpy = coh901318_prep_memcpy;
 	base->dma_memcpy.device_tx_status = coh901318_tx_status;
 	base->dma_memcpy.device_issue_pending = coh901318_issue_pending;
-	base->dma_memcpy.device_config = coh901318_dma_set_runtimeconfig;
-	base->dma_memcpy.device_pause = coh901318_pause;
-	base->dma_memcpy.device_resume = coh901318_resume;
-	base->dma_memcpy.device_terminate_all = coh901318_terminate_all;
+	base->dma_memcpy.device_control = coh901318_control;
 	base->dma_memcpy.dev = &pdev->dev;
 	/*
 	 * This controller can only access address at even 32bit boundaries,
 	 * i.e. 2^2
 	 */
-	base->dma_memcpy.copy_align = DMAENGINE_ALIGN_4_BYTES;
+	base->dma_memcpy.copy_align = 2;
 	err = dma_async_device_register(&base->dma_memcpy);
 
 	if (err)

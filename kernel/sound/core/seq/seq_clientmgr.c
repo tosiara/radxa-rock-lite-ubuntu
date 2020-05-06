@@ -577,7 +577,7 @@ static int update_timestamp_of_queue(struct snd_seq_event *event,
 	event->queue = queue;
 	event->flags &= ~SNDRV_SEQ_TIME_STAMP_MASK;
 	if (real_time) {
-		event->time.time = snd_seq_timer_get_cur_time(q->timer, true);
+		event->time.time = snd_seq_timer_get_cur_time(q->timer);
 		event->flags |= SNDRV_SEQ_TIME_STAMP_REAL;
 	} else {
 		event->time.tick = snd_seq_timer_get_cur_tick(q->timer);
@@ -1014,7 +1014,7 @@ static ssize_t snd_seq_write(struct file *file, const char __user *buf,
 {
 	struct snd_seq_client *client = file->private_data;
 	int written = 0, len;
-	int err, handled;
+	int err;
 	struct snd_seq_event event;
 
 	if (!(snd_seq_file_flags(file) & SNDRV_SEQ_LFLG_OUTPUT))
@@ -1027,8 +1027,6 @@ static ssize_t snd_seq_write(struct file *file, const char __user *buf,
 	if (!client->accept_output || client->pool == NULL)
 		return -ENXIO;
 
- repeat:
-	handled = 0;
 	/* allocate the pool now if the pool is not allocated yet */ 
 	mutex_lock(&client->ioctl_mutex);
 	if (client->pool->size > 0 && !snd_seq_write_pool_allocated(client)) {
@@ -1088,19 +1086,12 @@ static ssize_t snd_seq_write(struct file *file, const char __user *buf,
 						   0, 0, &client->ioctl_mutex);
 		if (err < 0)
 			break;
-		handled++;
 
 	__skip_event:
 		/* Update pointers and counts */
 		count -= len;
 		buf += len;
 		written += len;
-
-		/* let's have a coffee break if too many events are queued */
-		if (++handled >= 200) {
-			mutex_unlock(&client->ioctl_mutex);
-			goto repeat;
-		}
 	}
 
  out:
@@ -1153,7 +1144,7 @@ static int snd_seq_ioctl_system_info(struct snd_seq_client *client, void __user 
 	/* fill the info fields */
 	info.queues = SNDRV_SEQ_MAX_QUEUES;
 	info.clients = SNDRV_SEQ_MAX_CLIENTS;
-	info.ports = SNDRV_SEQ_MAX_PORTS;
+	info.ports = 256;	/* fixed limit */
 	info.channels = 256;	/* fixed limit */
 	info.cur_clients = client_usage.cur;
 	info.cur_queues = snd_seq_queue_get_cur_queues();
@@ -1302,6 +1293,7 @@ static int snd_seq_ioctl_create_port(struct snd_seq_client *client,
 				port->owner = callback->owner;
 			port->private_data = callback->private_data;
 			port->private_free = callback->private_free;
+			port->callback_all = callback->callback_all;
 			port->event_input = callback->event_input;
 			port->c_src.open = callback->subscribe;
 			port->c_src.close = callback->unsubscribe;
@@ -1551,14 +1543,19 @@ static int snd_seq_ioctl_create_queue(struct snd_seq_client *client,
 				      void __user *arg)
 {
 	struct snd_seq_queue_info info;
+	int result;
 	struct snd_seq_queue *q;
 
 	if (copy_from_user(&info, arg, sizeof(info)))
 		return -EFAULT;
 
-	q = snd_seq_queue_alloc(client->number, info.locked, info.flags);
-	if (IS_ERR(q))
-		return PTR_ERR(q);
+	result = snd_seq_queue_alloc(client->number, info.locked, info.flags);
+	if (result < 0)
+		return result;
+
+	q = queueptr(result);
+	if (q == NULL)
+		return -EINVAL;
 
 	info.queue = q->queue;
 	info.locked = q->locked;
@@ -1568,7 +1565,7 @@ static int snd_seq_ioctl_create_queue(struct snd_seq_client *client,
 	if (! info.name[0])
 		snprintf(info.name, sizeof(info.name), "Queue-%d", q->queue);
 	strscpy(q->name, info.name, sizeof(q->name));
-	snd_use_lock_free(&q->use_lock);
+	queuefree(q);
 
 	if (copy_to_user(arg, &info, sizeof(info)))
 		return -EFAULT;
@@ -1694,7 +1691,7 @@ static int snd_seq_ioctl_get_queue_status(struct snd_seq_client *client,
 	tmr = queue->timer;
 	status.events = queue->tickq->cells + queue->timeq->cells;
 
-	status.time = snd_seq_timer_get_cur_time(tmr, true);
+	status.time = snd_seq_timer_get_cur_time(tmr);
 	status.tick = snd_seq_timer_get_cur_tick(tmr);
 
 	status.running = tmr->running;
@@ -1898,7 +1895,6 @@ static int snd_seq_ioctl_get_client_pool(struct snd_seq_client *client,
 	if (cptr == NULL)
 		return -ENOENT;
 	memset(&info, 0, sizeof(info));
-	info.client = cptr->number;
 	info.output_pool = cptr->pool->size;
 	info.output_room = cptr->pool->room;
 	info.output_free = info.output_pool;
@@ -1906,7 +1902,8 @@ static int snd_seq_ioctl_get_client_pool(struct snd_seq_client *client,
 	if (cptr->type == USER_CLIENT) {
 		info.input_pool = cptr->data.user.fifo_pool_size;
 		info.input_free = info.input_pool;
-		info.input_free = snd_seq_fifo_unused_cells(cptr->data.user.fifo);
+		if (cptr->data.user.fifo)
+			info.input_free = snd_seq_unused_cells(cptr->data.user.fifo->pool);
 	} else {
 		info.input_pool = 0;
 		info.input_free = 0;
@@ -2474,7 +2471,7 @@ EXPORT_SYMBOL(snd_seq_kernel_client_write_poll);
 
 /*---------------------------------------------------------------------------*/
 
-#ifdef CONFIG_SND_PROC_FS
+#ifdef CONFIG_PROC_FS
 /*
  *  /proc interface
  */
@@ -2576,7 +2573,7 @@ void snd_seq_info_clients_read(struct snd_info_entry *entry,
 		snd_seq_client_unlock(client);
 	}
 }
-#endif /* CONFIG_SND_PROC_FS */
+#endif /* CONFIG_PROC_FS */
 
 /*---------------------------------------------------------------------------*/
 
@@ -2598,8 +2595,6 @@ static const struct file_operations snd_seq_f_ops =
 	.compat_ioctl =	snd_seq_ioctl_compat,
 };
 
-static struct device seq_dev;
-
 /* 
  * register sequencer device 
  */
@@ -2607,17 +2602,12 @@ int __init snd_sequencer_device_init(void)
 {
 	int err;
 
-	snd_device_initialize(&seq_dev, NULL);
-	dev_set_name(&seq_dev, "seq");
-
 	if (mutex_lock_interruptible(&register_mutex))
 		return -ERESTARTSYS;
 
-	err = snd_register_device(SNDRV_DEVICE_TYPE_SEQUENCER, NULL, 0,
-				  &snd_seq_f_ops, NULL, &seq_dev);
-	if (err < 0) {
+	if ((err = snd_register_device(SNDRV_DEVICE_TYPE_SEQUENCER, NULL, 0,
+				       &snd_seq_f_ops, NULL, "seq")) < 0) {
 		mutex_unlock(&register_mutex);
-		put_device(&seq_dev);
 		return err;
 	}
 	
@@ -2633,6 +2623,5 @@ int __init snd_sequencer_device_init(void)
  */
 void __exit snd_sequencer_device_done(void)
 {
-	snd_unregister_device(&seq_dev);
-	put_device(&seq_dev);
+	snd_unregister_device(SNDRV_DEVICE_TYPE_SEQUENCER, NULL, 0);
 }

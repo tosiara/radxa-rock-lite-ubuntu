@@ -56,8 +56,6 @@ struct qmi_wwan_state {
 /* default ethernet address used by the modem */
 static const u8 default_modem_addr[ETH_ALEN] = {0x02, 0x50, 0xf3};
 
-static const u8 buggy_fw_addr[ETH_ALEN] = {0x00, 0xa0, 0xc6, 0x00, 0x00, 0x00};
-
 /* Make up an ethernet header if the packet doesn't have one.
  *
  * A firmware bug common among several devices cause them to send raw
@@ -108,7 +106,7 @@ static int qmi_wwan_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 	skb_push(skb, ETH_HLEN);
 	skb_reset_mac_header(skb);
 	eth_hdr(skb)->h_proto = proto;
-	eth_zero_addr(eth_hdr(skb)->h_source);
+	memset(eth_hdr(skb)->h_source, 0, ETH_ALEN);
 fix_dest:
 	memcpy(eth_hdr(skb)->h_dest, dev->net->dev_addr, ETH_ALEN);
 	return 1;
@@ -229,11 +227,11 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	u8 *buf = intf->cur_altsetting->extra;
 	int len = intf->cur_altsetting->extralen;
 	struct usb_interface_descriptor *desc = &intf->cur_altsetting->desc;
-	struct usb_cdc_union_desc *cdc_union;
-	struct usb_cdc_ether_desc *cdc_ether;
+	struct usb_cdc_union_desc *cdc_union = NULL;
+	struct usb_cdc_ether_desc *cdc_ether = NULL;
+	u32 found = 0;
 	struct usb_driver *driver = driver_of(intf);
 	struct qmi_wwan_state *info = (void *)&dev->data;
-	struct usb_cdc_parsed_header hdr;
 
 	BUILD_BUG_ON((sizeof(((struct usbnet *)0)->data) <
 		      sizeof(struct qmi_wwan_state)));
@@ -243,9 +241,63 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	info->data = intf;
 
 	/* and a number of CDC descriptors */
-	cdc_parse_cdc_header(&hdr, intf, buf, len);
-	cdc_union = hdr.usb_cdc_union_desc;
-	cdc_ether = hdr.usb_cdc_ether_desc;
+	while (len > 3) {
+		struct usb_descriptor_header *h = (void *)buf;
+
+		/* ignore any misplaced descriptors */
+		if (h->bDescriptorType != USB_DT_CS_INTERFACE)
+			goto next_desc;
+
+		/* buf[2] is CDC descriptor subtype */
+		switch (buf[2]) {
+		case USB_CDC_HEADER_TYPE:
+			if (found & 1 << USB_CDC_HEADER_TYPE) {
+				dev_dbg(&intf->dev, "extra CDC header\n");
+				goto err;
+			}
+			if (h->bLength != sizeof(struct usb_cdc_header_desc)) {
+				dev_dbg(&intf->dev, "CDC header len %u\n",
+					h->bLength);
+				goto err;
+			}
+			break;
+		case USB_CDC_UNION_TYPE:
+			if (found & 1 << USB_CDC_UNION_TYPE) {
+				dev_dbg(&intf->dev, "extra CDC union\n");
+				goto err;
+			}
+			if (h->bLength != sizeof(struct usb_cdc_union_desc)) {
+				dev_dbg(&intf->dev, "CDC union len %u\n",
+					h->bLength);
+				goto err;
+			}
+			cdc_union = (struct usb_cdc_union_desc *)buf;
+			break;
+		case USB_CDC_ETHERNET_TYPE:
+			if (found & 1 << USB_CDC_ETHERNET_TYPE) {
+				dev_dbg(&intf->dev, "extra CDC ether\n");
+				goto err;
+			}
+			if (h->bLength != sizeof(struct usb_cdc_ether_desc)) {
+				dev_dbg(&intf->dev, "CDC ether len %u\n",
+					h->bLength);
+				goto err;
+			}
+			cdc_ether = (struct usb_cdc_ether_desc *)buf;
+			break;
+		}
+
+		/* Remember which CDC functional descriptors we've seen.  Works
+		 * for all types we care about, of which USB_CDC_ETHERNET_TYPE
+		 * (0x0f) is the highest numbered
+		 */
+		if (buf[2] < 32)
+			found |= 1 << buf[2];
+
+next_desc:
+		len -= h->bLength;
+		buf += h->bLength;
+	}
 
 	/* Use separate control and data interfaces if we found a CDC Union */
 	if (cdc_union) {
@@ -262,7 +314,7 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	}
 
 	/* errors aren't fatal - we can live with the dynamic address */
-	if (cdc_ether && cdc_ether->wMaxSegmentSize) {
+	if (cdc_ether) {
 		dev->hard_mtu = le16_to_cpu(cdc_ether->wMaxSegmentSize);
 		usbnet_get_ethernet_addr(dev, cdc_ether->iMACAddress);
 	}
@@ -280,12 +332,10 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 		usb_driver_release_interface(driver, info->data);
 	}
 
-	/* Never use the same address on both ends of the link, even if the
-	 * buggy firmware told us to. Or, if device is assigned the well-known
-	 * buggy firmware MAC address, replace it with a random address,
+	/* Never use the same address on both ends of the link, even
+	 * if the buggy firmware told us to.
 	 */
-	if (ether_addr_equal(dev->net->dev_addr, default_modem_addr) ||
-	    ether_addr_equal(dev->net->dev_addr, buggy_fw_addr))
+	if (ether_addr_equal(dev->net->dev_addr, default_modem_addr))
 		eth_hw_addr_random(dev->net);
 
 	/* make MAC addr easily distinguishable from an IP header */
@@ -489,13 +539,6 @@ static const struct usb_device_id products[] = {
 					      USB_CDC_PROTO_NONE),
 		.driver_info        = (unsigned long)&qmi_wwan_info,
 	},
-	{	/* HP lt2523 (Novatel E371) */
-		USB_DEVICE_AND_INTERFACE_INFO(0x03f0, 0x421d,
-					      USB_CLASS_COMM,
-					      USB_CDC_SUBCLASS_ETHERNET,
-					      USB_CDC_PROTO_NONE),
-		.driver_info        = (unsigned long)&qmi_wwan_info,
-	},
 	{	/* HP lt4112 LTE/HSPA+ Gobi 4G Module (Huawei me906e) */
 		USB_DEVICE_AND_INTERFACE_INFO(0x03f0, 0x581d, USB_CLASS_VENDOR_SPEC, 1, 7),
 		.driver_info = (unsigned long)&qmi_wwan_info,
@@ -503,7 +546,6 @@ static const struct usb_device_id products[] = {
 
 	/* 3. Combined interface devices matching on interface number */
 	{QMI_FIXED_INTF(0x0408, 0xea42, 4)},	/* Yota / Megafon M100-1 */
-	{QMI_FIXED_INTF(0x05c6, 0x6001, 3)},	/* 4G LTE usb-modem U901 */
 	{QMI_FIXED_INTF(0x05c6, 0x7000, 0)},
 	{QMI_FIXED_INTF(0x05c6, 0x7001, 1)},
 	{QMI_FIXED_INTF(0x05c6, 0x7002, 1)},
@@ -719,17 +761,15 @@ static const struct usb_device_id products[] = {
 	{QMI_FIXED_INTF(0x2001, 0x7e35, 4)},	/* D-Link DWM-222 */
 	{QMI_FIXED_INTF(0x2020, 0x2031, 4)},	/* Olicard 600 */
 	{QMI_FIXED_INTF(0x2020, 0x2033, 4)},	/* BroadMobi BM806U */
-	{QMI_FIXED_INTF(0x2020, 0x2060, 4)},	/* BroadMobi BM818 */
 	{QMI_FIXED_INTF(0x0f3d, 0x68a2, 8)},    /* Sierra Wireless MC7700 */
 	{QMI_FIXED_INTF(0x114f, 0x68a2, 8)},    /* Sierra Wireless MC7750 */
 	{QMI_FIXED_INTF(0x1199, 0x68a2, 8)},	/* Sierra Wireless MC7710 in QMI mode */
 	{QMI_FIXED_INTF(0x1199, 0x68a2, 19)},	/* Sierra Wireless MC7710 in QMI mode */
-	{QMI_FIXED_INTF(0x1199, 0x68c0, 8)},	/* Sierra Wireless MC7304/MC7354 */
-	{QMI_FIXED_INTF(0x1199, 0x68c0, 10)},	/* Sierra Wireless MC7304/MC7354 */
+	{QMI_FIXED_INTF(0x1199, 0x68c0, 8)},	/* Sierra Wireless MC73xx */
+	{QMI_FIXED_INTF(0x1199, 0x68c0, 10)},	/* Sierra Wireless MC73xx */
 	{QMI_FIXED_INTF(0x1199, 0x901c, 8)},    /* Sierra Wireless EM7700 */
 	{QMI_FIXED_INTF(0x1199, 0x901f, 8)},    /* Sierra Wireless EM7355 */
 	{QMI_FIXED_INTF(0x1199, 0x9041, 8)},	/* Sierra Wireless MC7305/MC7355 */
-	{QMI_FIXED_INTF(0x1199, 0x9041, 10)},	/* Sierra Wireless MC7305/MC7355 */
 	{QMI_FIXED_INTF(0x1199, 0x9051, 8)},	/* Netgear AirCard 340U */
 	{QMI_FIXED_INTF(0x1199, 0x9053, 8)},	/* Sierra Wireless Modem */
 	{QMI_FIXED_INTF(0x1199, 0x9054, 8)},	/* Sierra Wireless Modem */
@@ -767,11 +807,6 @@ static const struct usb_device_id products[] = {
 	{QMI_FIXED_INTF(0x413c, 0x81a4, 8)},	/* Dell Wireless 5570e HSPA+ (42Mbps) Mobile Broadband Card */
 	{QMI_FIXED_INTF(0x413c, 0x81a8, 8)},	/* Dell Wireless 5808 Gobi(TM) 4G LTE Mobile Broadband Card */
 	{QMI_FIXED_INTF(0x413c, 0x81a9, 8)},	/* Dell Wireless 5808e Gobi(TM) 4G LTE Mobile Broadband Card */
-	{QMI_FIXED_INTF(0x413c, 0x81b1, 8)},	/* Dell Wireless 5809e Gobi(TM) 4G LTE Mobile Broadband Card */
-	{QMI_FIXED_INTF(0x03f0, 0x4e1d, 8)},	/* HP lt4111 LTE/EV-DO/HSPA+ Gobi 4G Module */
-	{QMI_FIXED_INTF(0x03f0, 0x9d1d, 1)},	/* HP lt4120 Snapdragon X5 LTE */
-	{QMI_FIXED_INTF(0x22de, 0x9061, 3)},	/* WeTelecom WPD-600N */
-	{QMI_FIXED_INTF(0x1e0e, 0x9001, 5)},	/* SIMCom 7230E */
 
 	/* 4. Gobi 1000 devices */
 	{QMI_GOBI1K_DEVICE(0x05c6, 0x9212)},	/* Acer Gobi Modem Device */
@@ -802,7 +837,6 @@ static const struct usb_device_id products[] = {
 	{QMI_GOBI_DEVICE(0x05c6, 0x9245)},	/* Samsung Gobi 2000 Modem device (VL176) */
 	{QMI_GOBI_DEVICE(0x03f0, 0x251d)},	/* HP Gobi 2000 Modem device (VP412) */
 	{QMI_GOBI_DEVICE(0x05c6, 0x9215)},	/* Acer Gobi 2000 Modem device (VP413) */
-	{QMI_FIXED_INTF(0x05c6, 0x9215, 4)},	/* Quectel EC20 Mini PCIe */
 	{QMI_GOBI_DEVICE(0x05c6, 0x9265)},	/* Asus Gobi 2000 Modem device (VR305) */
 	{QMI_GOBI_DEVICE(0x05c6, 0x9235)},	/* Top Global Gobi 2000 Modem device (VR306) */
 	{QMI_GOBI_DEVICE(0x05c6, 0x9275)},	/* iRex Technologies Gobi 2000 Modem device (VR307) */
@@ -834,19 +868,6 @@ static const struct usb_device_id products[] = {
 };
 MODULE_DEVICE_TABLE(usb, products);
 
-static bool quectel_ec20_detected(struct usb_interface *intf)
-{
-	struct usb_device *dev = interface_to_usbdev(intf);
-
-	if (dev->actconfig &&
-	    le16_to_cpu(dev->descriptor.idVendor) == 0x05c6 &&
-	    le16_to_cpu(dev->descriptor.idProduct) == 0x9215 &&
-	    dev->actconfig->desc.bNumInterfaces == 5)
-		return true;
-
-	return false;
-}
-
 static int qmi_wwan_probe(struct usb_interface *intf,
 			  const struct usb_device_id *prod)
 {
@@ -872,12 +893,6 @@ static int qmi_wwan_probe(struct usb_interface *intf,
 		dev_dbg(&intf->dev,
 			"Rejecting interface number match for class %02x\n",
 			desc->bInterfaceClass);
-		return -ENODEV;
-	}
-
-	/* Quectel EC20 quirk where we've QMI on interface 4 instead of 0 */
-	if (quectel_ec20_detected(intf) && desc->bInterfaceNumber == 0) {
-		dev_dbg(&intf->dev, "Quectel EC20 quirk, skipping interface 0\n");
 		return -ENODEV;
 	}
 

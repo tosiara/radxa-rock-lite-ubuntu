@@ -31,15 +31,6 @@
 #include <asm/msr.h>
 #include <asm/processor-flags.h>
 #include <asm/asm-offsets.h>
-#include <asm/bootparam.h>
-
-/*
- * Locally defined symbols should be marked hidden:
- */
-	.hidden _bss
-	.hidden _ebss
-	.hidden _got
-	.hidden _egot
 
 	__HEAD
 	.code32
@@ -55,7 +46,7 @@ ENTRY(startup_32)
 	 * Test KEEP_SEGMENTS flag to see if the bootloader is asking
 	 * us to not reload segments
 	 */
-	testb $KEEP_SEGMENTS, BP_loadflags(%esi)
+	testb $(1<<6), BP_loadflags(%esi)
 	jnz 1f
 
 	cli
@@ -104,7 +95,7 @@ ENTRY(startup_32)
 	notl	%eax
 	andl	%eax, %ebx
 	cmpl	$LOAD_PHYSICAL_ADDR, %ebx
-	jae	1f
+	jge	1f
 #endif
 	movl	$LOAD_PHYSICAL_ADDR, %ebx
 1:
@@ -173,7 +164,7 @@ ENTRY(startup_32)
 	/* After gdt is loaded */
 	xorl	%eax, %eax
 	lldt	%ax
-	movl    $__BOOT_TSS, %eax
+	movl    $0x20, %eax
 	ltr	%ax
 
 	/*
@@ -224,11 +215,6 @@ ENTRY(efi32_stub_entry)
 
 	leal	efi32_config(%ebp), %eax
 	movl	%eax, efi_config(%ebp)
-
-	/* Disable paging */
-	movl	%cr0, %eax
-	btrl	$X86_CR0_PG_BIT, %eax
-	movl	%eax, %cr0
 
 	jmp	startup_32
 ENDPROC(efi32_stub_entry)
@@ -337,7 +323,7 @@ preferred_addr:
 	notq	%rax
 	andq	%rax, %rbp
 	cmpq	$LOAD_PHYSICAL_ADDR, %rbp
-	jae	1f
+	jge	1f
 #endif
 	movq	$LOAD_PHYSICAL_ADDR, %rbp
 1:

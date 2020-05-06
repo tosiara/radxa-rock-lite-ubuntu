@@ -156,8 +156,7 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb, struct unix_diag_r
 	if (nla_put_u8(skb, UNIX_DIAG_SHUTDOWN, sk->sk_shutdown))
 		goto out_nlmsg_trim;
 
-	nlmsg_end(skb, nlh);
-	return 0;
+	return nlmsg_end(skb, nlh);
 
 out_nlmsg_trim:
 	nlmsg_cancel(skb, nlh);
@@ -221,7 +220,7 @@ done:
 	return skb->len;
 }
 
-static struct sock *unix_lookup_by_ino(unsigned int ino)
+static struct sock *unix_lookup_by_ino(int ino)
 {
 	int i;
 	struct sock *sk;

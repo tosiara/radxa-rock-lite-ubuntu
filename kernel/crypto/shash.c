@@ -41,7 +41,7 @@ static int shash_setkey_unaligned(struct crypto_shash *tfm, const u8 *key,
 	int err;
 
 	absize = keylen + (alignmask & ~(crypto_tfm_ctx_alignment() - 1));
-	buffer = kmalloc(absize, GFP_ATOMIC);
+	buffer = kmalloc(absize, GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 
@@ -524,6 +524,11 @@ static int crypto_shash_init_tfm(struct crypto_tfm *tfm)
 	return 0;
 }
 
+static unsigned int crypto_shash_extsize(struct crypto_alg *alg)
+{
+	return alg->cra_ctxsize;
+}
+
 #ifdef CONFIG_NET
 static int crypto_shash_report(struct sk_buff *skb, struct crypto_alg *alg)
 {
@@ -563,7 +568,7 @@ static void crypto_shash_show(struct seq_file *m, struct crypto_alg *alg)
 
 static const struct crypto_type crypto_shash_type = {
 	.ctxsize = crypto_shash_ctxsize,
-	.extsize = crypto_alg_extsize,
+	.extsize = crypto_shash_extsize,
 	.init = crypto_init_shash_ops,
 	.init_tfm = crypto_shash_init_tfm,
 #ifdef CONFIG_PROC_FS

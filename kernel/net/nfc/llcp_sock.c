@@ -118,14 +118,9 @@ static int llcp_sock_bind(struct socket *sock, struct sockaddr *addr, int alen)
 	llcp_sock->service_name = kmemdup(llcp_addr.service_name,
 					  llcp_sock->service_name_len,
 					  GFP_KERNEL);
-	if (!llcp_sock->service_name) {
-		ret = -ENOMEM;
-		goto put_dev;
-	}
+
 	llcp_sock->ssap = nfc_llcp_get_sdp_ssap(local, llcp_sock);
 	if (llcp_sock->ssap == LLCP_SAP_MAX) {
-		kfree(llcp_sock->service_name);
-		llcp_sock->service_name = NULL;
 		ret = -EADDRINUSE;
 		goto put_dev;
 	}
@@ -531,13 +526,13 @@ static int llcp_sock_getname(struct socket *sock, struct sockaddr *uaddr,
 
 static inline unsigned int llcp_accept_poll(struct sock *parent)
 {
-	struct nfc_llcp_sock *llcp_sock, *parent_sock;
+	struct nfc_llcp_sock *llcp_sock, *n, *parent_sock;
 	struct sock *sk;
 
 	parent_sock = nfc_llcp_sock(parent);
 
-	list_for_each_entry(llcp_sock, &parent_sock->accept_queue,
-			    accept_queue) {
+	list_for_each_entry_safe(llcp_sock, n, &parent_sock->accept_queue,
+				 accept_queue) {
 		sk = &llcp_sock->sk;
 
 		if (sk->sk_state == LLCP_CONNECTED)
@@ -579,7 +574,7 @@ static unsigned int llcp_sock_poll(struct file *file, struct socket *sock,
 	if (sock_writeable(sk) && sk->sk_state == LLCP_CONNECTED)
 		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
 	else
-		sk_set_bit(SOCKWQ_ASYNC_NOSPACE, sk);
+		set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 
 	pr_debug("mask 0x%x\n", mask);
 
@@ -756,8 +751,8 @@ error:
 	return ret;
 }
 
-static int llcp_sock_sendmsg(struct socket *sock, struct msghdr *msg,
-			     size_t len)
+static int llcp_sock_sendmsg(struct kiocb *iocb, struct socket *sock,
+			     struct msghdr *msg, size_t len)
 {
 	struct sock *sk = sock->sk;
 	struct nfc_llcp_sock *llcp_sock = nfc_llcp_sock(sk);
@@ -799,8 +794,8 @@ static int llcp_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 	return nfc_llcp_send_i_frame(llcp_sock, msg, len);
 }
 
-static int llcp_sock_recvmsg(struct socket *sock, struct msghdr *msg,
-			     size_t len, int flags)
+static int llcp_sock_recvmsg(struct kiocb *iocb, struct socket *sock,
+			     struct msghdr *msg, size_t len, int flags)
 {
 	int noblock = flags & MSG_DONTWAIT;
 	struct sock *sk = sock->sk;
@@ -838,7 +833,7 @@ static int llcp_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 	copied = min_t(unsigned int, rlen, len);
 
 	cskb = skb;
-	if (skb_copy_datagram_msg(cskb, 0, msg, copied)) {
+	if (skb_copy_datagram_iovec(cskb, 0, msg->msg_iov, copied)) {
 		if (!(flags & MSG_PEEK))
 			skb_queue_head(&sk->sk_receive_queue, skb);
 		return -EFAULT;
@@ -948,12 +943,12 @@ static void llcp_sock_destruct(struct sock *sk)
 	}
 }
 
-struct sock *nfc_llcp_sock_alloc(struct socket *sock, int type, gfp_t gfp, int kern)
+struct sock *nfc_llcp_sock_alloc(struct socket *sock, int type, gfp_t gfp)
 {
 	struct sock *sk;
 	struct nfc_llcp_sock *llcp_sock;
 
-	sk = sk_alloc(&init_net, PF_NFC, gfp, &llcp_sock_proto, kern);
+	sk = sk_alloc(&init_net, PF_NFC, gfp, &llcp_sock_proto);
 	if (!sk)
 		return NULL;
 
@@ -999,7 +994,7 @@ void nfc_llcp_sock_free(struct nfc_llcp_sock *sock)
 }
 
 static int llcp_sock_create(struct net *net, struct socket *sock,
-			    const struct nfc_protocol *nfc_proto, int kern)
+			    const struct nfc_protocol *nfc_proto)
 {
 	struct sock *sk;
 
@@ -1010,15 +1005,12 @@ static int llcp_sock_create(struct net *net, struct socket *sock,
 	    sock->type != SOCK_RAW)
 		return -ESOCKTNOSUPPORT;
 
-	if (sock->type == SOCK_RAW) {
-		if (!capable(CAP_NET_RAW))
-			return -EPERM;
+	if (sock->type == SOCK_RAW)
 		sock->ops = &llcp_rawsock_ops;
-	} else {
+	else
 		sock->ops = &llcp_sock_ops;
-	}
 
-	sk = nfc_llcp_sock_alloc(sock, sock->type, GFP_ATOMIC, kern);
+	sk = nfc_llcp_sock_alloc(sock, sock->type, GFP_ATOMIC);
 	if (sk == NULL)
 		return -ENOMEM;
 

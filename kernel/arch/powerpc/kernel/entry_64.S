@@ -19,13 +19,11 @@
  */
 
 #include <linux/errno.h>
-#include <linux/err.h>
 #include <asm/unistd.h>
 #include <asm/processor.h>
 #include <asm/page.h>
 #include <asm/mmu.h>
 #include <asm/thread_info.h>
-#include <asm/code-patching-asm.h>
 #include <asm/ppc_asm.h>
 #include <asm/asm-offsets.h>
 #include <asm/cputable.h>
@@ -36,13 +34,6 @@
 #include <asm/ftrace.h>
 #include <asm/hw_irq.h>
 #include <asm/context_tracking.h>
-#include <asm/tm.h>
-#include <asm/barrier.h>
-#ifdef CONFIG_PPC_BOOK3S
-#include <asm/exception-64s.h>
-#else
-#include <asm/exception-64e.h>
-#endif
 
 /*
  * System calls.
@@ -58,14 +49,10 @@ exception_marker:
 	.section	".text"
 	.align 7
 
+#undef SHOW_SYSCALLS
+
 	.globl system_call_common
 system_call_common:
-#ifdef CONFIG_PPC_TRANSACTIONAL_MEM
-BEGIN_FTR_SECTION
-	extrdi.	r10, r12, 1, (63-MSR_TS_T_LG) /* transaction active? */
-	bne	tabort_syscall
-END_FTR_SECTION_IFSET(CPU_FTR_TM)
-#endif
 	andi.	r10,r12,MSR_PR
 	mr	r10,r1
 	addi	r1,r1,-INT_FRAME_SIZE
@@ -77,11 +64,6 @@ END_FTR_SECTION_IFSET(CPU_FTR_TM)
 	std	r0,GPR0(r1)
 	std	r10,GPR1(r1)
 	beq	2f			/* if from kernel mode */
-#ifdef CONFIG_PPC_FSL_BOOK3E
-START_BTB_FLUSH_SECTION
-	BTB_FLUSH(r10)
-END_BTB_FLUSH_SECTION
-#endif
 	ACCOUNT_CPU_USER_ENTRY(r10, r11)
 2:	std	r2,GPR2(r1)
 	std	r3,GPR3(r1)
@@ -160,10 +142,18 @@ END_FW_FTR_SECTION_IFSET(FW_FEATURE_SPLPAR)
 	li	r10,1
 	std	r10,SOFTE(r1)
 
+#ifdef SHOW_SYSCALLS
+	bl	do_show_syscall
+	REST_GPR(0,r1)
+	REST_4GPRS(3,r1)
+	REST_2GPRS(7,r1)
+	addi	r9,r1,STACK_FRAME_OVERHEAD
+#endif
 	CURRENT_THREAD_INFO(r11, r1)
 	ld	r10,TI_FLAGS(r11)
-	andi.	r11,r10,_TIF_SYSCALL_DOTRACE
-	bne	syscall_dotrace		/* does not return */
+	andi.	r11,r10,_TIF_SYSCALL_T_OR_A
+	bne	syscall_dotrace
+.Lsyscall_dotrace_cont:
 	cmpldi	0,r0,NR_syscalls
 	bge-	syscall_enosys
 
@@ -184,21 +174,16 @@ system_call:			/* label this so stack traces look sane */
 	clrldi	r8,r8,32
 15:
 	slwi	r0,r0,4
-
-	barrier_nospec_asm
-	/*
-	 * Prevent the load of the handler below (based on the user-passed
-	 * system call number) being speculatively executed until the test
-	 * against NR_syscalls and branch to .Lsyscall_enosys above has
-	 * committed.
-	 */
-
 	ldx	r12,r11,r0	/* Fetch system call handler [ptr] */
 	mtctr   r12
 	bctrl			/* Call handler */
 
-.Lsyscall_exit:
+syscall_exit:
 	std	r3,RESULT(r1)
+#ifdef SHOW_SYSCALLS
+	bl	do_show_syscall_exit
+	ld	r3,RESULT(r1)
+#endif
 	CURRENT_THREAD_INFO(r12, r1)
 
 	ld	r8,_MSR(r1)
@@ -228,8 +213,8 @@ system_call:			/* label this so stack traces look sane */
 #endif /* CONFIG_PPC_BOOK3E */
 
 	ld	r9,TI_FLAGS(r12)
-	li	r11,-MAX_ERRNO
-	andi.	r0,r9,(_TIF_SYSCALL_DOTRACE|_TIF_SINGLESTEP|_TIF_USER_WORK_MASK|_TIF_PERSYSCALL_MASK)
+	li	r11,-_LAST_ERRNO
+	andi.	r0,r9,(_TIF_SYSCALL_T_OR_A|_TIF_SINGLESTEP|_TIF_USER_WORK_MASK|_TIF_PERSYSCALL_MASK)
 	bne-	syscall_exit_work
 	cmpld	r3,r11
 	ld	r5,_CCR(r1)
@@ -246,23 +231,13 @@ END_FTR_SECTION_IFCLR(CPU_FTR_STCX_CHECKS_ADDRESS)
 	ACCOUNT_CPU_USER_EXIT(r11, r12)
 	HMT_MEDIUM_LOW_HAS_PPR
 	ld	r13,GPR13(r1)	/* only restore r13 if returning to usermode */
-	ld	r2,GPR2(r1)
-	ld	r1,GPR1(r1)
-	mtlr	r4
-	mtcr	r5
-	mtspr	SPRN_SRR0,r7
-	mtspr	SPRN_SRR1,r8
-	RFI_TO_USER
-	b	.	/* prevent speculative execution */
-
-	/* exit to kernel */
 1:	ld	r2,GPR2(r1)
 	ld	r1,GPR1(r1)
 	mtlr	r4
 	mtcr	r5
 	mtspr	SPRN_SRR0,r7
 	mtspr	SPRN_SRR1,r8
-	RFI_TO_KERNEL
+	RFI
 	b	.	/* prevent speculative execution */
 
 syscall_error:	
@@ -276,38 +251,26 @@ syscall_dotrace:
 	bl	save_nvgprs
 	addi	r3,r1,STACK_FRAME_OVERHEAD
 	bl	do_syscall_trace_enter
-
 	/*
-	 * We use the return value of do_syscall_trace_enter() as the syscall
-	 * number. If the syscall was rejected for any reason do_syscall_trace_enter()
-	 * returns an invalid syscall number and the test below against
-	 * NR_syscalls will fail.
+	 * Restore argument registers possibly just changed.
+	 * We use the return value of do_syscall_trace_enter
+	 * for the call number to look up in the table (r0).
 	 */
 	mr	r0,r3
-
-	/* Restore argument registers just clobbered and/or possibly changed. */
 	ld	r3,GPR3(r1)
 	ld	r4,GPR4(r1)
 	ld	r5,GPR5(r1)
 	ld	r6,GPR6(r1)
 	ld	r7,GPR7(r1)
 	ld	r8,GPR8(r1)
-
-	/* Repopulate r9 and r10 for the system_call path */
 	addi	r9,r1,STACK_FRAME_OVERHEAD
 	CURRENT_THREAD_INFO(r10, r1)
 	ld	r10,TI_FLAGS(r10)
-
-	cmpldi	r0,NR_syscalls
-	blt+	system_call
-
-	/* Return code is already in r3 thanks to do_syscall_trace_enter() */
-	b	.Lsyscall_exit
-
+	b	.Lsyscall_dotrace_cont
 
 syscall_enosys:
 	li	r3,-ENOSYS
-	b	.Lsyscall_exit
+	b	syscall_exit
 	
 syscall_exit_work:
 #ifdef CONFIG_PPC_BOOK3S
@@ -320,7 +283,7 @@ syscall_exit_work:
 	beq+	0f
 	REST_NVGPRS(r1)
 	b	2f
-0:	cmpld	r3,r11		/* r11 is -MAX_ERRNO */
+0:	cmpld	r3,r11		/* r10 is -LAST_ERRNO */
 	blt+	1f
 	andi.	r0,r9,_TIF_NOERROR
 	bne-	1f
@@ -344,7 +307,7 @@ syscall_exit_work:
 
 4:	/* Anything else left to do? */
 	SET_DEFAULT_THREAD_PPR(r3, r10)		/* Set thread.ppr = 3 */
-	andi.	r0,r9,(_TIF_SYSCALL_DOTRACE|_TIF_SINGLESTEP)
+	andi.	r0,r9,(_TIF_SYSCALL_T_OR_A|_TIF_SINGLESTEP)
 	beq	ret_from_except_lite
 
 	/* Re-enable interrupts */
@@ -360,33 +323,6 @@ syscall_exit_work:
 	addi	r3,r1,STACK_FRAME_OVERHEAD
 	bl	do_syscall_trace_leave
 	b	ret_from_except
-
-#ifdef CONFIG_PPC_TRANSACTIONAL_MEM
-tabort_syscall:
-	/* Firstly we need to enable TM in the kernel */
-	mfmsr	r10
-	li	r9, 1
-	rldimi	r10, r9, MSR_TM_LG, 63-MSR_TM_LG
-	mtmsrd	r10, 0
-
-	/* tabort, this dooms the transaction, nothing else */
-	li	r9, (TM_CAUSE_SYSCALL|TM_CAUSE_PERSISTENT)
-	TABORT(R9)
-
-	/*
-	 * Return directly to userspace. We have corrupted user register state,
-	 * but userspace will never see that register state. Execution will
-	 * resume after the tbegin of the aborted transaction with the
-	 * checkpointed register state.
-	 */
-	li	r9, MSR_RI
-	andc	r10, r10, r9
-	mtmsrd	r10, 1
-	mtspr	SPRN_SRR0, r11
-	mtspr	SPRN_SRR1, r12
-	RFI_TO_USER
-	b	.	/* prevent speculative execution */
-#endif
 
 /* Save non-volatile GPRs, if not already saved. */
 _GLOBAL(save_nvgprs)
@@ -411,38 +347,33 @@ _GLOBAL(save_nvgprs)
 _GLOBAL(ppc_fork)
 	bl	save_nvgprs
 	bl	sys_fork
-	b	.Lsyscall_exit
+	b	syscall_exit
 
 _GLOBAL(ppc_vfork)
 	bl	save_nvgprs
 	bl	sys_vfork
-	b	.Lsyscall_exit
+	b	syscall_exit
 
 _GLOBAL(ppc_clone)
 	bl	save_nvgprs
 	bl	sys_clone
-	b	.Lsyscall_exit
+	b	syscall_exit
 
 _GLOBAL(ppc32_swapcontext)
 	bl	save_nvgprs
 	bl	compat_sys_swapcontext
-	b	.Lsyscall_exit
+	b	syscall_exit
 
 _GLOBAL(ppc64_swapcontext)
 	bl	save_nvgprs
 	bl	sys_swapcontext
-	b	.Lsyscall_exit
-
-_GLOBAL(ppc_switch_endian)
-	bl	save_nvgprs
-	bl	sys_switch_endian
-	b	.Lsyscall_exit
+	b	syscall_exit
 
 _GLOBAL(ret_from_fork)
 	bl	schedule_tail
 	REST_NVGPRS(r1)
 	li	r3,0
-	b	.Lsyscall_exit
+	b	syscall_exit
 
 _GLOBAL(ret_from_kernel_thread)
 	bl	schedule_tail
@@ -454,64 +385,7 @@ _GLOBAL(ret_from_kernel_thread)
 #endif
 	blrl
 	li	r3,0
-	b	.Lsyscall_exit
-
-#ifdef CONFIG_PPC_BOOK3S_64
-
-#define FLUSH_COUNT_CACHE	\
-1:	nop;			\
-	patch_site 1b, patch__call_flush_count_cache
-
-
-#define BCCTR_FLUSH	.long 0x4c400420
-
-.macro nops number
-	.rept \number
-	nop
-	.endr
-.endm
-
-.balign 32
-.global flush_count_cache
-flush_count_cache:
-	/* Save LR into r9 */
-	mflr	r9
-
-	// Flush the link stack
-	.rept 64
-	bl	.+4
-	.endr
-	b	1f
-	nops	6
-
-	.balign 32
-	/* Restore LR */
-1:	mtlr	r9
-
-	// If we're just flushing the link stack, return here
-3:	nop
-	patch_site 3b patch__flush_link_stack_return
-
-	li	r9,0x7fff
-	mtctr	r9
-
-	BCCTR_FLUSH
-
-2:	nop
-	patch_site 2b patch__flush_count_cache_return
-
-	nops	3
-
-	.rept 278
-	.balign 32
-	BCCTR_FLUSH
-	nops	7
-	.endr
-
-	blr
-#else
-#define FLUSH_COUNT_CACHE
-#endif /* CONFIG_PPC_BOOK3S_64 */
+	b	syscall_exit
 
 /*
  * This routine switches between two different tasks.  The process
@@ -575,8 +449,6 @@ BEGIN_FTR_SECTION
 	std	r0, THREAD_EBBRR(r3)
 END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 #endif
-
-	FLUSH_COUNT_CACHE
 
 #ifdef CONFIG_SMP
 	/* We need a sync somewhere here to make sure that if the
@@ -693,7 +565,7 @@ BEGIN_FTR_SECTION
 	ld	r0,THREAD_DSCR(r4)
 	cmpwi	r6,0
 	bne	1f
-	ld	r0,PACA_DSCR_DEFAULT(r13)
+	ld	r0,PACA_DSCR(r13)
 1:
 BEGIN_FTR_SECTION_NESTED(70)
 	mfspr	r8, SPRN_FSCR
@@ -977,7 +849,7 @@ BEGIN_FTR_SECTION
 END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 	ACCOUNT_CPU_USER_EXIT(r2, r4)
 	REST_GPR(13, r1)
-
+1:
 	mtspr	SPRN_SRR1,r3
 
 	ld	r2,_CCR(r1)
@@ -990,22 +862,8 @@ END_FTR_SECTION_IFSET(CPU_FTR_HAS_PPR)
 	ld	r3,GPR3(r1)
 	ld	r4,GPR4(r1)
 	ld	r1,GPR1(r1)
-	RFI_TO_USER
-	b	.	/* prevent speculative execution */
 
-1:	mtspr	SPRN_SRR1,r3
-
-	ld	r2,_CCR(r1)
-	mtcrf	0xFF,r2
-	ld	r2,_NIP(r1)
-	mtspr	SPRN_SRR0,r2
-
-	ld	r0,GPR0(r1)
-	ld	r2,GPR2(r1)
-	ld	r3,GPR3(r1)
-	ld	r4,GPR4(r1)
-	ld	r1,GPR1(r1)
-	RFI_TO_KERNEL
+	rfid
 	b	.	/* prevent speculative execution */
 
 #endif /* CONFIG_PPC_BOOK3E */
@@ -1181,7 +1039,7 @@ _GLOBAL(enter_rtas)
 	
 	mtspr	SPRN_SRR0,r5
 	mtspr	SPRN_SRR1,r6
-	RFI_TO_KERNEL
+	rfid
 	b	.	/* prevent speculative execution */
 
 rtas_return_loc:
@@ -1206,7 +1064,7 @@ rtas_return_loc:
 
 	mtspr	SPRN_SRR0,r3
 	mtspr	SPRN_SRR1,r4
-	RFI_TO_KERNEL
+	rfid
 	b	.	/* prevent speculative execution */
 
 	.align	3
@@ -1277,7 +1135,7 @@ _GLOBAL(enter_prom)
 	LOAD_REG_IMMEDIATE(r12, MSR_SF | MSR_ISF | MSR_LE)
 	andc	r11,r11,r12
 	mtsrr1	r11
-	RFI_TO_KERNEL
+	rfid
 #endif /* CONFIG_PPC_BOOK3E */
 
 1:	/* Return from OF */
@@ -1370,19 +1228,12 @@ _GLOBAL(ftrace_graph_caller)
 	ld	r4, 128(r1)
 	subi	r4, r4, MCOUNT_INSN_SIZE
 
-	/* Grab the LR out of the caller stack frame */
+	/* get the parent address */
 	ld	r11, 112(r1)
-	ld	r3, 16(r11)
+	addi	r3, r11, 16
 
 	bl	prepare_ftrace_return
 	nop
-
-	/*
-	 * prepare_ftrace_return gives us the address we divert to.
-	 * Change the LR in the callers stack frame to this.
-	 */
-	ld	r11, 112(r1)
-	std	r3, 16(r11)
 
 	ld	r0, 128(r1)
 	mtlr	r0
@@ -1390,6 +1241,28 @@ _GLOBAL(ftrace_graph_caller)
 	blr
 
 _GLOBAL(return_to_handler)
+	/* need to save return values */
+	std	r4,  -24(r1)
+	std	r3,  -16(r1)
+	std	r31, -8(r1)
+	mr	r31, r1
+	stdu	r1, -112(r1)
+
+	bl	ftrace_return_to_handler
+	nop
+
+	/* return value has real return address */
+	mtlr	r3
+
+	ld	r1, 0(r1)
+	ld	r4,  -24(r1)
+	ld	r3,  -16(r1)
+	ld	r31, -8(r1)
+
+	/* Jump back to real return address */
+	blr
+
+_GLOBAL(mod_return_to_handler)
 	/* need to save return values */
 	std	r4,  -32(r1)
 	std	r3,  -24(r1)
@@ -1400,7 +1273,7 @@ _GLOBAL(return_to_handler)
 	stdu	r1, -112(r1)
 
 	/*
-	 * We might be called from a module.
+	 * We are in a module using the module's TOC.
 	 * Switch to our TOC to run inside the core kernel.
 	 */
 	ld	r2, PACATOC(r13)

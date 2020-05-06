@@ -39,9 +39,9 @@ static int cw1200_scan_start(struct cw1200_common *priv, struct wsm_scan *scan)
 	cancel_delayed_work_sync(&priv->clear_recent_scan_work);
 	atomic_set(&priv->scan.in_progress, 1);
 	atomic_set(&priv->recent_scan, 1);
-	cw1200_pm_stay_awake(&priv->pm_state, msecs_to_jiffies(tmo));
+	cw1200_pm_stay_awake(&priv->pm_state, tmo * HZ / 1000);
 	queue_delayed_work(priv->workqueue, &priv->scan.timeout,
-			   msecs_to_jiffies(tmo));
+			   tmo * HZ / 1000);
 	ret = wsm_scan(priv, scan);
 	if (ret) {
 		atomic_set(&priv->scan.in_progress, 0);
@@ -78,20 +78,17 @@ int cw1200_hw_scan(struct ieee80211_hw *hw,
 	if (req->n_ssids > WSM_SCAN_MAX_NUM_OF_SSIDS)
 		return -EINVAL;
 
-	/* will be unlocked in cw1200_scan_work() */
-	down(&priv->scan.lock);
-	mutex_lock(&priv->conf_mutex);
-
-	frame.skb = ieee80211_probereq_get(hw, priv->vif->addr, NULL, 0,
+	frame.skb = ieee80211_probereq_get(hw, priv->vif, NULL, 0,
 		req->ie_len);
-	if (!frame.skb) {
-		mutex_unlock(&priv->conf_mutex);
-		up(&priv->scan.lock);
+	if (!frame.skb)
 		return -ENOMEM;
-	}
 
 	if (req->ie_len)
 		memcpy(skb_put(frame.skb, req->ie_len), req->ie, req->ie_len);
+
+	/* will be unlocked in cw1200_scan_work() */
+	down(&priv->scan.lock);
+	mutex_lock(&priv->conf_mutex);
 
 	ret = wsm_set_template_frame(priv, &frame);
 	if (!ret) {
@@ -99,9 +96,9 @@ int cw1200_hw_scan(struct ieee80211_hw *hw,
 		ret = wsm_set_probe_responder(priv, true);
 	}
 	if (ret) {
-		dev_kfree_skb(frame.skb);
 		mutex_unlock(&priv->conf_mutex);
 		up(&priv->scan.lock);
+		dev_kfree_skb(frame.skb);
 		return ret;
 	}
 
@@ -123,9 +120,10 @@ int cw1200_hw_scan(struct ieee80211_hw *hw,
 		++priv->scan.n_ssids;
 	}
 
+	mutex_unlock(&priv->conf_mutex);
+
 	if (frame.skb)
 		dev_kfree_skb(frame.skb);
-	mutex_unlock(&priv->conf_mutex);
 	queue_work(priv->workqueue, &priv->scan.work);
 	return 0;
 }
@@ -388,8 +386,8 @@ void cw1200_probe_work(struct work_struct *work)
 	if (down_trylock(&priv->scan.lock)) {
 		/* Scan is already in progress. Requeue self. */
 		schedule();
-		queue_delayed_work(priv->workqueue, &priv->scan.probe_work,
-				   msecs_to_jiffies(100));
+		queue_delayed_work(priv->workqueue,
+				   &priv->scan.probe_work, HZ / 10);
 		mutex_unlock(&priv->conf_mutex);
 		return;
 	}

@@ -494,8 +494,7 @@ int fmc_send_cmd(struct fmdev *fmdev, u8 fm_op, u16 type, void *payload,
 		return -EIO;
 	}
 	/* Send response data to caller */
-	if (response != NULL && response_len != NULL && evt_hdr->dlen &&
-	    evt_hdr->dlen <= payload_len) {
+	if (response != NULL && response_len != NULL && evt_hdr->dlen) {
 		/* Skip header info and copy only response data */
 		skb_pull(skb, sizeof(struct fm_event_msg_hdr));
 		memcpy(response, skb->data, evt_hdr->dlen);
@@ -591,8 +590,6 @@ static void fm_irq_handle_flag_getcmd_resp(struct fmdev *fmdev)
 		return;
 
 	fm_evt_hdr = (void *)skb->data;
-	if (fm_evt_hdr->dlen > sizeof(fmdev->irq_info.flag))
-		return;
 
 	/* Skip header info and copy only response data */
 	skb_pull(skb, sizeof(struct fm_event_msg_hdr));
@@ -692,6 +689,7 @@ static void fm_rx_update_af_cache(struct fmdev *fmdev, u8 af)
 static void fm_rdsparse_swapbytes(struct fmdev *fmdev,
 		struct fm_rdsdata_format *rds_format)
 {
+	u8 byte1;
 	u8 index = 0;
 	u8 *rds_buff;
 
@@ -703,7 +701,9 @@ static void fm_rdsparse_swapbytes(struct fmdev *fmdev,
 	if (fmdev->asci_id != 0x6350) {
 		rds_buff = &rds_format->data.groupdatabuff.buff[0];
 		while (index + 1 < FM_RX_RDS_INFO_FIELD_MAX) {
-			swap(rds_buff[index], rds_buff[index + 1]);
+			byte1 = rds_buff[index];
+			rds_buff[index] = rds_buff[index + 1];
+			rds_buff[index + 1] = byte1;
 			index += 2;
 		}
 	}
@@ -1278,9 +1278,8 @@ static int fm_download_firmware(struct fmdev *fmdev, const u8 *fw_name)
 
 		switch (action->type) {
 		case ACTION_SEND_COMMAND:	/* Send */
-			ret = fmc_send_cmd(fmdev, 0, 0, action->data,
-					   action->size, NULL, NULL);
-			if (ret)
+			if (fmc_send_cmd(fmdev, 0, 0, action->data,
+						action->size, NULL, NULL))
 				goto rel_fw;
 
 			cmd_cnt++;
@@ -1319,7 +1318,7 @@ static int load_default_rx_configuration(struct fmdev *fmdev)
 static int fm_power_up(struct fmdev *fmdev, u8 mode)
 {
 	u16 payload;
-	__be16 asic_id = 0, asic_ver = 0;
+	__be16 asic_id, asic_ver;
 	int resp_len, ret;
 	u8 fw_name[50];
 

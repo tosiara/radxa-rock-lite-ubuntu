@@ -18,7 +18,6 @@
 #include <linux/utsname.h>
 #include <linux/proc_ns.h>
 #include <linux/uaccess.h>
-#include <linux/sched.h>
 
 #include "util.h"
 
@@ -32,10 +31,7 @@ DEFINE_SPINLOCK(mq_lock);
 struct ipc_namespace init_ipc_ns = {
 	.count		= ATOMIC_INIT(1),
 	.user_ns = &init_user_ns,
-	.ns.inum = PROC_IPC_INIT_INO,
-#ifdef CONFIG_IPC_NS
-	.ns.ops = &ipcns_operations,
-#endif
+	.proc_inum = PROC_IPC_INIT_INO,
 };
 
 atomic_t nr_ipc_ns = ATOMIC_INIT(1);
@@ -67,9 +63,6 @@ static struct msg_msg *alloc_msg(size_t len)
 	pseg = &msg->next;
 	while (len > 0) {
 		struct msg_msgseg *seg;
-
-		cond_resched();
-
 		alen = min(len, DATALEN_SEG);
 		seg = kmalloc(sizeof(*seg) + alen, GFP_KERNEL);
 		if (seg == NULL)
@@ -127,6 +120,7 @@ struct msg_msg *copy_msg(struct msg_msg *src, struct msg_msg *dst)
 	size_t len = src->m_ts;
 	size_t alen;
 
+	BUG_ON(dst == NULL);
 	if (src->m_ts > dst->m_ts)
 		return ERR_PTR(-EINVAL);
 
@@ -182,8 +176,6 @@ void free_msg(struct msg_msg *msg)
 	kfree(msg);
 	while (seg != NULL) {
 		struct msg_msgseg *tmp = seg->next;
-
-		cond_resched();
 		kfree(seg);
 		seg = tmp;
 	}

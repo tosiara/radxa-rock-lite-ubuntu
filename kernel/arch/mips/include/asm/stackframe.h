@@ -40,7 +40,7 @@
 		LONG_S	v1, PT_HI(sp)
 		mflhxu	v1
 		LONG_S	v1, PT_ACX(sp)
-#elif !defined(CONFIG_CPU_MIPSR6)
+#else
 		mfhi	v1
 #endif
 #ifdef CONFIG_32BIT
@@ -50,7 +50,7 @@
 		LONG_S	$10, PT_R10(sp)
 		LONG_S	$11, PT_R11(sp)
 		LONG_S	$12, PT_R12(sp)
-#if !defined(CONFIG_CPU_HAS_SMARTMIPS) && !defined(CONFIG_CPU_MIPSR6)
+#ifndef CONFIG_CPU_HAS_SMARTMIPS
 		LONG_S	v1, PT_HI(sp)
 		mflo	v1
 #endif
@@ -58,7 +58,7 @@
 		LONG_S	$14, PT_R14(sp)
 		LONG_S	$15, PT_R15(sp)
 		LONG_S	$24, PT_R24(sp)
-#if !defined(CONFIG_CPU_HAS_SMARTMIPS) && !defined(CONFIG_CPU_MIPSR6)
+#ifndef CONFIG_CPU_HAS_SMARTMIPS
 		LONG_S	v1, PT_LO(sp)
 #endif
 #ifdef CONFIG_CPU_CAVIUM_OCTEON
@@ -216,19 +216,12 @@
 		LONG_S	$25, PT_R25(sp)
 		LONG_S	$28, PT_R28(sp)
 		LONG_S	$31, PT_R31(sp)
-
-		/* Set thread_info if we're coming from user mode */
-		mfc0	k0, CP0_STATUS
-		sll	k0, 3		/* extract cu0 bit */
-		bltz	k0, 9f
-
 		ori	$28, sp, _THREAD_MASK
 		xori	$28, _THREAD_MASK
 #ifdef CONFIG_CPU_CAVIUM_OCTEON
 		.set    mips64
 		pref    0, 0($28)       /* Prefetch the current pointer */
 #endif
-9:
 		.set	pop
 		.endm
 
@@ -258,7 +251,7 @@
 		mtlhx	$24
 		LONG_L	$24, PT_LO(sp)
 		mtlhx	$24
-#elif !defined(CONFIG_CPU_MIPSR6)
+#else
 		LONG_L	$24, PT_LO(sp)
 		mtlo	$24
 		LONG_L	$24, PT_HI(sp)

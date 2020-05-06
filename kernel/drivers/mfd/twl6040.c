@@ -44,7 +44,7 @@
 #define VIBRACTRL_MEMBER(reg) ((reg == TWL6040_REG_VIBCTLL) ? 0 : 1)
 #define TWL6040_NUM_SUPPLIES	(2)
 
-static const struct reg_default twl6040_defaults[] = {
+static struct reg_default twl6040_defaults[] = {
 	{ 0x01, 0x4B }, /* REG_ASICID	(ro) */
 	{ 0x02, 0x00 }, /* REG_ASICREV	(ro) */
 	{ 0x03, 0x00 }, /* REG_INTID	*/
@@ -86,7 +86,7 @@ static const struct reg_default twl6040_defaults[] = {
 	{ 0x2E, 0x00 }, /* REG_STATUS	(ro) */
 };
 
-static struct reg_sequence twl6040_patch[] = {
+static struct reg_default twl6040_patch[] = {
 	/*
 	 * Select I2C bus access to dual access registers
 	 * Interrupt register is cleared on read
@@ -316,19 +316,8 @@ int twl6040_power(struct twl6040 *twl6040, int on)
 			}
 		}
 
-		/*
-		 * Register access can produce errors after power-up unless we
-		 * wait at least 8ms based on measurements on duovero.
-		 */
-		usleep_range(10000, 12000);
-
 		/* Sync with the HW */
-		ret = regcache_sync(twl6040->regmap);
-		if (ret) {
-			dev_err(twl6040->dev, "Failed to sync with the HW: %i\n",
-				ret);
-			goto out;
-		}
+		regcache_sync(twl6040->regmap);
 
 		/* Default PLL configuration after power up */
 		twl6040->pll = TWL6040_SYSCLK_SEL_LPPLL;
@@ -595,7 +584,7 @@ static bool twl6040_writeable_reg(struct device *dev, unsigned int reg)
 	}
 }
 
-static const struct regmap_config twl6040_regmap_config = {
+static struct regmap_config twl6040_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 
@@ -662,8 +651,6 @@ static int twl6040_probe(struct i2c_client *client,
 
 	twl6040->clk32k = devm_clk_get(&client->dev, "clk32k");
 	if (IS_ERR(twl6040->clk32k)) {
-		if (PTR_ERR(twl6040->clk32k) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
 		dev_info(&client->dev, "clk32k is not handled\n");
 		twl6040->clk32k = NULL;
 	}
@@ -818,6 +805,7 @@ MODULE_DEVICE_TABLE(i2c, twl6040_i2c_id);
 static struct i2c_driver twl6040_driver = {
 	.driver = {
 		.name = "twl6040",
+		.owner = THIS_MODULE,
 	},
 	.probe		= twl6040_probe,
 	.remove		= twl6040_remove,
@@ -830,3 +818,4 @@ MODULE_DESCRIPTION("TWL6040 MFD");
 MODULE_AUTHOR("Misael Lopez Cruz <misael.lopez@ti.com>");
 MODULE_AUTHOR("Jorge Eduardo Candelaria <jorge.candelaria@ti.com>");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:twl6040");

@@ -116,14 +116,12 @@ static int pm80x_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	unsigned char buf[4];
 	unsigned long ticks, base, data;
 	regmap_raw_read(info->map, PM800_RTC_EXPIRE2_1, buf, 4);
-	base = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
-		(buf[1] << 8) | buf[0];
+	base = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	dev_dbg(info->dev, "%x-%x-%x-%x\n", buf[0], buf[1], buf[2], buf[3]);
 
 	/* load 32-bit read-only counter */
 	regmap_raw_read(info->map, PM800_RTC_COUNTER1, buf, 4);
-	data = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
-		(buf[1] << 8) | buf[0];
+	data = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	ticks = base + data;
 	dev_dbg(info->dev, "get base:0x%lx, RO count:0x%lx, ticks:0x%lx\n",
 		base, data, ticks);
@@ -146,8 +144,7 @@ static int pm80x_rtc_set_time(struct device *dev, struct rtc_time *tm)
 
 	/* load 32-bit read-only counter */
 	regmap_raw_read(info->map, PM800_RTC_COUNTER1, buf, 4);
-	data = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
-		(buf[1] << 8) | buf[0];
+	data = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	base = ticks - data;
 	dev_dbg(info->dev, "set base:0x%lx, RO count:0x%lx, ticks:0x%lx\n",
 		base, data, ticks);
@@ -168,13 +165,11 @@ static int pm80x_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	int ret;
 
 	regmap_raw_read(info->map, PM800_RTC_EXPIRE2_1, buf, 4);
-	base = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
-		(buf[1] << 8) | buf[0];
+	base = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	dev_dbg(info->dev, "%x-%x-%x-%x\n", buf[0], buf[1], buf[2], buf[3]);
 
 	regmap_raw_read(info->map, PM800_RTC_EXPIRE1_1, buf, 4);
-	data = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
-		(buf[1] << 8) | buf[0];
+	data = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	ticks = base + data;
 	dev_dbg(info->dev, "get base:0x%lx, RO count:0x%lx, ticks:0x%lx\n",
 		base, data, ticks);
@@ -197,14 +192,12 @@ static int pm80x_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	regmap_update_bits(info->map, PM800_RTC_CONTROL, PM800_ALARM1_EN, 0);
 
 	regmap_raw_read(info->map, PM800_RTC_EXPIRE2_1, buf, 4);
-	base = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
-		(buf[1] << 8) | buf[0];
+	base = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	dev_dbg(info->dev, "%x-%x-%x-%x\n", buf[0], buf[1], buf[2], buf[3]);
 
 	/* load 32-bit read-only counter */
 	regmap_raw_read(info->map, PM800_RTC_COUNTER1, buf, 4);
-	data = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
-		(buf[1] << 8) | buf[0];
+	data = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 	ticks = base + data;
 	dev_dbg(info->dev, "get base:0x%lx, RO count:0x%lx, ticks:0x%lx\n",
 		base, data, ticks);
@@ -258,26 +251,17 @@ static SIMPLE_DEV_PM_OPS(pm80x_rtc_pm_ops, pm80x_rtc_suspend, pm80x_rtc_resume);
 static int pm80x_rtc_probe(struct platform_device *pdev)
 {
 	struct pm80x_chip *chip = dev_get_drvdata(pdev->dev.parent);
-	struct pm80x_rtc_pdata *pdata = dev_get_platdata(&pdev->dev);
+	struct pm80x_platform_data *pm80x_pdata =
+				dev_get_platdata(pdev->dev.parent);
+	struct pm80x_rtc_pdata *pdata = NULL;
 	struct pm80x_rtc_info *info;
-	struct device_node *node = pdev->dev.of_node;
 	struct rtc_time tm;
 	unsigned long ticks = 0;
 	int ret;
 
-	if (!pdata && !node) {
-		dev_err(&pdev->dev,
-			"pm80x-rtc requires platform data or of_node\n");
-		return -EINVAL;
-	}
-
-	if (!pdata) {
-		pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
-		if (!pdata) {
-			dev_err(&pdev->dev, "failed to allocate memory\n");
-			return -ENOMEM;
-		}
-	}
+	pdata = dev_get_platdata(&pdev->dev);
+	if (pdata == NULL)
+		dev_warn(&pdev->dev, "No platform data!\n");
 
 	info =
 	    devm_kzalloc(&pdev->dev, sizeof(struct pm80x_rtc_info), GFP_KERNEL);
@@ -343,8 +327,11 @@ static int pm80x_rtc_probe(struct platform_device *pdev)
 	regmap_update_bits(info->map, PM800_RTC_CONTROL, PM800_RTC1_USE_XO,
 			   PM800_RTC1_USE_XO);
 
-	/* remember whether this power up is caused by PMIC RTC or not */
-	info->rtc_dev->dev.platform_data = &pdata->rtc_wakeup;
+	if (pm80x_pdata) {
+		pdata = pm80x_pdata->rtc;
+		if (pdata)
+			info->rtc_dev->dev.platform_data = &pdata->rtc_wakeup;
+	}
 
 	device_init_wakeup(&pdev->dev, 1);
 
@@ -365,6 +352,7 @@ static int pm80x_rtc_remove(struct platform_device *pdev)
 static struct platform_driver pm80x_rtc_driver = {
 	.driver = {
 		   .name = "88pm80x-rtc",
+		   .owner = THIS_MODULE,
 		   .pm = &pm80x_rtc_pm_ops,
 		   },
 	.probe = pm80x_rtc_probe,

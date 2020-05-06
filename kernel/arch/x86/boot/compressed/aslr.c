@@ -1,6 +1,5 @@
 #include "misc.h"
 
-#include <asm/asm.h>
 #include <asm/msr.h>
 #include <asm/archrandom.h>
 #include <asm/e820.h>
@@ -83,7 +82,7 @@ static unsigned long get_random_long(void)
 
 	if (has_cpuflag(X86_FEATURE_TSC)) {
 		debug_putstr(" RDTSC");
-		raw = rdtsc();
+		rdtscll(raw);
 
 		random ^= raw;
 		use_i8254 = false;
@@ -95,7 +94,7 @@ static unsigned long get_random_long(void)
 	}
 
 	/* Circular multiply for better bit diffusion */
-	asm(_ASM_MUL "%3"
+	asm("mul %3"
 	    : "=a" (random), "=d" (raw)
 	    : "a" (random), "rm" (mix_const));
 	random += raw;
@@ -296,8 +295,7 @@ static unsigned long find_random_addr(unsigned long minimum,
 	return slots_fetch_random();
 }
 
-unsigned char *choose_kernel_location(struct boot_params *boot_params,
-				      unsigned char *input,
+unsigned char *choose_kernel_location(unsigned char *input,
 				      unsigned long input_size,
 				      unsigned char *output,
 				      unsigned long output_size)
@@ -316,8 +314,6 @@ unsigned char *choose_kernel_location(struct boot_params *boot_params,
 		goto out;
 	}
 #endif
-
-	boot_params->hdr.loadflags |= KASLR_FLAG;
 
 	/* Record the various known unsafe memory ranges. */
 	mem_avoid_init((unsigned long)input, input_size,

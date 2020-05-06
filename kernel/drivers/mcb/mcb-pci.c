@@ -51,23 +51,22 @@ static int mcb_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	priv->mapbase = pci_resource_start(pdev, 0);
 	if (!priv->mapbase) {
 		dev_err(&pdev->dev, "No PCI resource\n");
-		ret = -ENODEV;
-		goto out_disable;
+		goto err_start;
 	}
 
 	res = request_mem_region(priv->mapbase, CHAM_HEADER_SIZE,
 				 KBUILD_MODNAME);
-	if (!res) {
+	if (IS_ERR(res)) {
 		dev_err(&pdev->dev, "Failed to request PCI memory\n");
-		ret = -EBUSY;
-		goto out_disable;
+		ret = PTR_ERR(res);
+		goto err_start;
 	}
 
 	priv->base = ioremap(priv->mapbase, CHAM_HEADER_SIZE);
 	if (!priv->base) {
 		dev_err(&pdev->dev, "Cannot ioremap\n");
 		ret = -ENOMEM;
-		goto out_release;
+		goto err_ioremap;
 	}
 
 	flags = pci_resource_flags(pdev, 0);
@@ -75,7 +74,7 @@ static int mcb_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ret = -ENOTSUPP;
 		dev_err(&pdev->dev,
 			"IO mapped PCI devices are not supported\n");
-		goto out_iounmap;
+		goto err_ioremap;
 	}
 
 	pci_set_drvdata(pdev, priv);
@@ -83,14 +82,14 @@ static int mcb_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	priv->bus = mcb_alloc_bus(&pdev->dev);
 	if (IS_ERR(priv->bus)) {
 		ret = PTR_ERR(priv->bus);
-		goto out_iounmap;
+		goto err_drvdata;
 	}
 
 	priv->bus->get_irq = mcb_pci_get_irq;
 
 	ret = chameleon_parse_cells(priv->bus, priv->mapbase, priv->base);
 	if (ret < 0)
-		goto out_mcb_bus;
+		goto err_drvdata;
 	num_cells = ret;
 
 	dev_dbg(&pdev->dev, "Found %d cells\n", num_cells);
@@ -99,13 +98,11 @@ static int mcb_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	return 0;
 
-out_mcb_bus:
-	mcb_release_bus(priv->bus);
-out_iounmap:
+err_drvdata:
 	iounmap(priv->base);
-out_release:
+err_ioremap:
 	pci_release_region(pdev, 0);
-out_disable:
+err_start:
 	pci_disable_device(pdev);
 	return ret;
 }

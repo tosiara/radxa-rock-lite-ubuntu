@@ -62,36 +62,20 @@ do {							\
 		groups_free(group_info);		\
 } while (0)
 
-extern struct group_info init_groups;
-#ifdef CONFIG_MULTIUSER
 extern struct group_info *groups_alloc(int);
+extern struct group_info init_groups;
 extern void groups_free(struct group_info *);
-
-extern int in_group_p(kgid_t);
-extern int in_egroup_p(kgid_t);
-#else
-static inline void groups_free(struct group_info *group_info)
-{
-}
-
-static inline int in_group_p(kgid_t grp)
-{
-        return 1;
-}
-static inline int in_egroup_p(kgid_t grp)
-{
-        return 1;
-}
-#endif
 extern int set_current_groups(struct group_info *);
 extern void set_groups(struct cred *, struct group_info *);
 extern int groups_search(const struct group_info *, kgid_t);
 extern bool may_setgroups(void);
-extern void groups_sort(struct group_info *);
 
 /* access the groups "array" with this macro */
 #define GROUP_AT(gi, i) \
 	((gi)->blocks[(i) / NGROUPS_PER_BLOCK][(i) % NGROUPS_PER_BLOCK])
+
+extern int in_group_p(kgid_t);
+extern int in_egroup_p(kgid_t);
 
 /*
  * The security context of a task
@@ -138,7 +122,6 @@ struct cred {
 	kernel_cap_t	cap_permitted;	/* caps we're permitted */
 	kernel_cap_t	cap_effective;	/* caps we can actually use */
 	kernel_cap_t	cap_bset;	/* capability bounding set */
-	kernel_cap_t	cap_ambient;	/* Ambient capability set */
 #ifdef CONFIG_KEYS
 	unsigned char	jit_keyring;	/* default keyring to attach requested
 					 * keys to */
@@ -153,11 +136,7 @@ struct cred {
 	struct user_struct *user;	/* real user ID subscription */
 	struct user_namespace *user_ns; /* user_ns the caps and keyrings are relative to. */
 	struct group_info *group_info;	/* supplementary groups for euid/fsgid */
-	/* RCU deletion */
-	union {
-		int non_rcu;			/* Can we skip RCU deletion? */
-		struct rcu_head	rcu;		/* RCU deletion hook */
-	};
+	struct rcu_head	rcu;		/* RCU deletion hook */
 };
 
 extern void __put_cred(struct cred *);
@@ -218,13 +197,6 @@ static inline void validate_process_creds(void)
 }
 #endif
 
-static inline bool cap_ambient_invariant_ok(const struct cred *cred)
-{
-	return cap_issubset(cred->cap_ambient,
-			    cap_intersect(cred->cap_permitted,
-					  cred->cap_inheritable));
-}
-
 /**
  * get_new_cred - Get a reference on a new set of credentials
  * @cred: The new credentials to reference
@@ -255,7 +227,6 @@ static inline const struct cred *get_cred(const struct cred *cred)
 {
 	struct cred *nonconst_cred = (struct cred *) cred;
 	validate_creds(cred);
-	nonconst_cred->non_rcu = 0;
 	return get_new_cred(nonconst_cred);
 }
 

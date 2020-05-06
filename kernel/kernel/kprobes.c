@@ -127,7 +127,7 @@ static void *alloc_insn_page(void)
 
 void __weak free_insn_page(void *page)
 {
-	module_memfree(page);
+	module_free(NULL, page);
 }
 
 struct kprobe_insn_cache kprobe_insn_slots = {
@@ -514,14 +514,8 @@ static void do_free_cleaned_kprobes(void)
 	struct optimized_kprobe *op, *tmp;
 
 	list_for_each_entry_safe(op, tmp, &freeing_list, list) {
+		BUG_ON(!kprobe_unused(&op->kp));
 		list_del_init(&op->list);
-		if (WARN_ON_ONCE(!kprobe_unused(&op->kp))) {
-			/*
-			 * This must not happen, but if there is a kprobe
-			 * still in use, keep it on kprobes hash list.
-			 */
-			continue;
-		}
 		free_aggr_kprobe(&op->kp);
 	}
 }
@@ -726,7 +720,7 @@ static void prepare_optimized_kprobe(struct kprobe *p)
 	struct optimized_kprobe *op;
 
 	op = container_of(p, struct optimized_kprobe, kp);
-	arch_prepare_optimized_kprobe(op, p);
+	arch_prepare_optimized_kprobe(op);
 }
 
 /* Allocate new optimized_kprobe and try to prepare optimized instructions */
@@ -740,7 +734,7 @@ static struct kprobe *alloc_aggr_kprobe(struct kprobe *p)
 
 	INIT_LIST_HEAD(&op->list);
 	op->kp.addr = p->addr;
-	arch_prepare_optimized_kprobe(op, p);
+	arch_prepare_optimized_kprobe(op);
 
 	return &op->kp;
 }
@@ -878,8 +872,7 @@ static void __disarm_kprobe(struct kprobe *p, bool reopt)
 {
 	struct kprobe *_p;
 
-	/* Try to unoptimize */
-	unoptimize_kprobe(p, kprobes_all_disarmed);
+	unoptimize_kprobe(p, false);	/* Try to unoptimize */
 
 	if (!kprobe_queued(p)) {
 		arch_disarm_kprobe(p);
@@ -930,7 +923,7 @@ static struct kprobe *alloc_aggr_kprobe(struct kprobe *p)
 #ifdef CONFIG_KPROBES_ON_FTRACE
 static struct ftrace_ops kprobe_ftrace_ops __read_mostly = {
 	.func = kprobe_ftrace_handler,
-	.flags = FTRACE_OPS_FL_SAVE_REGS | FTRACE_OPS_FL_IPMODIFY,
+	.flags = FTRACE_OPS_FL_SAVE_REGS,
 };
 static int kprobe_ftrace_enabled;
 
@@ -1349,7 +1342,7 @@ bool __weak arch_within_kprobe_blacklist(unsigned long addr)
 	       addr < (unsigned long)__kprobes_text_end;
 }
 
-bool within_kprobe_blacklist(unsigned long addr)
+static bool within_kprobe_blacklist(unsigned long addr)
 {
 	struct kprobe_blacklist_entry *ent;
 
@@ -1428,10 +1421,16 @@ static inline int check_kprobe_rereg(struct kprobe *p)
 	return ret;
 }
 
-int __weak arch_check_ftrace_location(struct kprobe *p)
+static int check_kprobe_address_safe(struct kprobe *p,
+				     struct module **probed_mod)
 {
+	int ret = 0;
 	unsigned long ftrace_addr;
 
+	/*
+	 * If the address is located on a ftrace nop, set the
+	 * breakpoint to the following instruction.
+	 */
 	ftrace_addr = ftrace_location((unsigned long)p->addr);
 	if (ftrace_addr) {
 #ifdef CONFIG_KPROBES_ON_FTRACE
@@ -1443,25 +1442,14 @@ int __weak arch_check_ftrace_location(struct kprobe *p)
 		return -EINVAL;
 #endif
 	}
-	return 0;
-}
 
-static int check_kprobe_address_safe(struct kprobe *p,
-				     struct module **probed_mod)
-{
-	int ret;
-
-	ret = arch_check_ftrace_location(p);
-	if (ret)
-		return ret;
 	jump_label_lock();
 	preempt_disable();
 
 	/* Ensure it is not in reserved area nor out of text */
 	if (!kernel_text_address((unsigned long) p->addr) ||
 	    within_kprobe_blacklist((unsigned long) p->addr) ||
-	    jump_label_text_reserved(p->addr, p->addr) ||
-	    find_bug((unsigned long)p->addr)) {
+	    jump_label_text_reserved(p->addr, p->addr)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1590,13 +1578,7 @@ static struct kprobe *__disable_kprobe(struct kprobe *p)
 
 		/* Try to disarm and disable this/parent probe */
 		if (p == orig_p || aggr_kprobe_disabled(orig_p)) {
-			/*
-			 * If kprobes_all_disarmed is set, orig_p
-			 * should have already been disarmed, so
-			 * skip unneed disarming process.
-			 */
-			if (!kprobes_all_disarmed)
-				disarm_kprobe(orig_p, true);
+			disarm_kprobe(orig_p, true);
 			orig_p->flags |= KPROBE_FLAG_DISABLED;
 		}
 	}
@@ -2345,12 +2327,6 @@ static void arm_all_kprobes(void)
 	if (!kprobes_all_disarmed)
 		goto already_enabled;
 
-	/*
-	 * optimize_kprobe() called by arm_kprobe() checks
-	 * kprobes_all_disarmed, so set kprobes_all_disarmed before
-	 * arm_kprobe.
-	 */
-	kprobes_all_disarmed = false;
 	/* Arming kprobes doesn't optimize kprobe itself */
 	for (i = 0; i < KPROBE_TABLE_SIZE; i++) {
 		head = &kprobe_table[i];
@@ -2359,6 +2335,7 @@ static void arm_all_kprobes(void)
 				arm_kprobe(p);
 	}
 
+	kprobes_all_disarmed = false;
 	printk(KERN_INFO "Kprobes globally enabled\n");
 
 already_enabled:

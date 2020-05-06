@@ -57,34 +57,20 @@
 #define MIDR_IMPLEMENTOR(midr)	\
 	(((midr) & MIDR_IMPLEMENTOR_MASK) >> MIDR_IMPLEMENTOR_SHIFT)
 
-#define MIDR_CPU_VAR_REV(var, rev) \
-	(((var) << MIDR_VARIANT_SHIFT) | (rev))
-
-#define MIDR_CPU_PART_MASK	  \
-	(MIDR_IMPLEMENTOR_MASK	| \
-	 MIDR_ARCHITECTURE_MASK | \
-	 MIDR_PARTNUM_MASK)
-
 #define MIDR_CPU_PART(imp, partnum) \
 	(((imp)			<< MIDR_IMPLEMENTOR_SHIFT) | \
 	(0xf			<< MIDR_ARCHITECTURE_SHIFT) | \
 	((partnum)		<< MIDR_PARTNUM_SHIFT))
 
-#define ARM_CPU_IMP_ARM			0x41
-#define ARM_CPU_IMP_APM			0x50
-#define ARM_CPU_IMP_CAVIUM		0x43
+#define ARM_CPU_IMP_ARM		0x41
+#define ARM_CPU_IMP_APM		0x50
 
-#define ARM_CPU_PART_AEM_V8		0xD0F
-#define ARM_CPU_PART_FOUNDATION		0xD00
-#define ARM_CPU_PART_CORTEX_A57		0xD07
-#define ARM_CPU_PART_CORTEX_A53		0xD03
-#define ARM_CPU_PART_CORTEX_A55		0xD05
+#define ARM_CPU_PART_AEM_V8	0xD0F
+#define ARM_CPU_PART_FOUNDATION	0xD00
+#define ARM_CPU_PART_CORTEX_A57	0xD07
+#define ARM_CPU_PART_CORTEX_A53	0xD03
 
-#define APM_CPU_PART_POTENZA		0x000
-
-#define CAVIUM_CPU_PART_THUNDERX	0x0A1
-
-#define MIDR_CORTEX_A55 MIDR_CPU_PART(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A55)
+#define APM_CPU_PART_POTENZA	0x000
 
 #ifndef __ASSEMBLY__
 
@@ -117,6 +103,7 @@ static inline u32 __attribute_const__ read_cpuid_cachetype(void)
 {
 	return read_cpuid(CTR_EL0);
 }
+
 #endif /* __ASSEMBLY__ */
 
 #endif

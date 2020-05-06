@@ -19,10 +19,9 @@
 #include <asm/setup.h>
 #include <asm/processor-flags.h>
 #include <asm/msr-index.h>
-#include <asm/cpufeatures.h>
+#include <asm/cpufeature.h>
 #include <asm/percpu.h>
 #include <asm/nops.h>
-#include <asm/bootparam.h>
 
 /* Physical address */
 #define pa(X) ((X) - __PAGE_OFFSET)
@@ -98,7 +97,7 @@ ENTRY(startup_32)
 	
 	/* test KEEP_SEGMENTS flag to see if the bootloader is asking
 		us to not reload segments */
-	testb $KEEP_SEGMENTS, BP_loadflags(%esi)
+	testb $(1<<6), BP_loadflags(%esi)
 	jnz 2f
 
 /*
@@ -152,7 +151,7 @@ ENTRY(startup_32)
 	movl %eax, pa(olpc_ofw_pgd)
 #endif
 
-#ifdef CONFIG_MICROCODE
+#ifdef CONFIG_MICROCODE_EARLY
 	/* Early load ucode on BSP. */
 	call load_ucode_bsp
 #endif
@@ -311,10 +310,11 @@ ENTRY(startup_32_smp)
 	movl %eax,%ss
 	leal -__PAGE_OFFSET(%ecx),%esp
 
-#ifdef CONFIG_MICROCODE
+#ifdef CONFIG_MICROCODE_EARLY
 	/* Early load ucode on AP. */
 	call load_ucode_ap
 #endif
+
 
 default_entry:
 #define CR0_STATE	(X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | \
@@ -556,7 +556,7 @@ early_idt_handler_common:
 	cld
 
 	cmpl $2,(%esp)		# X86_TRAP_NMI
-	je .Lis_nmi		# Ignore NMI
+	je is_nmi		# Ignore NMI
 
 	cmpl $2,%ss:early_recursion_flag
 	je hlt_loop
@@ -571,7 +571,7 @@ early_idt_handler_common:
 	movl %eax,%ds
 	movl %eax,%es
 
-	cmpw $(__KERNEL_CS),32(%esp)
+	cmpl $(__KERNEL_CS),32(%esp)
 	jne 10f
 
 	leal 28(%esp),%eax	# Pointer to %eip
@@ -609,7 +609,7 @@ ex_entry:
 	pop %ecx
 	pop %eax
 	decl %ss:early_recursion_flag
-.Lis_nmi:
+is_nmi:
 	addl $8,%esp		/* drop vector number and error code */
 	iret
 ENDPROC(early_idt_handler_common)
@@ -669,17 +669,14 @@ __PAGE_ALIGNED_BSS
 initial_pg_pmd:
 	.fill 1024*KPMDS,4,0
 #else
-.globl initial_page_table
-initial_page_table:
+ENTRY(initial_page_table)
 	.fill 1024,4,0
 #endif
 initial_pg_fixmap:
 	.fill 1024,4,0
-.globl empty_zero_page
-empty_zero_page:
+ENTRY(empty_zero_page)
 	.fill 4096,1,0
-.globl swapper_pg_dir
-swapper_pg_dir:
+ENTRY(swapper_pg_dir)
 	.fill 1024,4,0
 
 /*

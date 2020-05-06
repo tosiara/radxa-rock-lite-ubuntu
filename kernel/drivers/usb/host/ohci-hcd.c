@@ -155,8 +155,7 @@ static int ohci_urb_enqueue (
 	int		retval = 0;
 
 	/* every endpoint has a ed, locate and maybe (re)initialize it */
-	ed = ed_get(ohci, urb->ep, urb->dev, pipe, urb->interval);
-	if (! ed)
+	if (! (ed = ed_get (ohci, urb->ep, urb->dev, pipe, urb->interval)))
 		return -ENOMEM;
 
 	/* for the private part of the URB we need the number of TDs (size) */
@@ -415,7 +414,8 @@ static void ohci_usb_reset (struct ohci_hcd *ohci)
  * other cases where the next software may expect clean state from the
  * "firmware".  this is bus-neutral, unlike shutdown() methods.
  */
-static void _ohci_shutdown(struct usb_hcd *hcd)
+static void
+ohci_shutdown (struct usb_hcd *hcd)
 {
 	struct ohci_hcd *ohci;
 
@@ -429,16 +429,6 @@ static void _ohci_shutdown(struct usb_hcd *hcd)
 
 	ohci_writel(ohci, ohci->fminterval, &ohci->regs->fminterval);
 	ohci->rh_state = OHCI_RH_HALTED;
-}
-
-static void ohci_shutdown(struct usb_hcd *hcd)
-{
-	struct ohci_hcd	*ohci = hcd_to_ohci(hcd);
-	unsigned long flags;
-
-	spin_lock_irqsave(&ohci->lock, flags);
-	_ohci_shutdown(hcd);
-	spin_unlock_irqrestore(&ohci->lock, flags);
 }
 
 /*-------------------------------------------------------------------------*
@@ -759,7 +749,7 @@ static void io_watchdog_func(unsigned long _ohci)
  died:
 			usb_hc_died(ohci_to_hcd(ohci));
 			ohci_dump(ohci);
-			_ohci_shutdown(ohci_to_hcd(ohci));
+			ohci_shutdown(ohci_to_hcd(ohci));
 			goto done;
 		} else {
 			/* No write back because the done queue was empty */
@@ -1258,6 +1248,11 @@ MODULE_LICENSE ("GPL");
 #ifdef CONFIG_MACH_JZ4740
 #include "ohci-jz4740.c"
 #define PLATFORM_DRIVER	ohci_hcd_jz4740_driver
+#endif
+
+#ifdef CONFIG_USB_OCTEON_OHCI
+#include "ohci-octeon.c"
+#define PLATFORM_DRIVER		ohci_octeon_driver
 #endif
 
 #ifdef CONFIG_TILE_USB

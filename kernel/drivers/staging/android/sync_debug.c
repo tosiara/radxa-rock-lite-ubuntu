@@ -25,7 +25,6 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/anon_inodes.h>
-#include <linux/time64.h>
 #include "sync.h"
 
 #ifdef CONFIG_DEBUG_FS
@@ -96,10 +95,9 @@ static void sync_print_pt(struct seq_file *s, struct sync_pt *pt, bool fence)
 		   sync_status_str(status));
 
 	if (status <= 0) {
-		struct timespec64 ts64 =
-			ktime_to_timespec64(pt->base.timestamp);
+		struct timeval tv = ktime_to_timeval(pt->base.timestamp);
 
-		seq_printf(s, "@%lld.%09ld", (s64)ts64.tv_sec, ts64.tv_nsec);
+		seq_printf(s, "@%ld.%06ld", tv.tv_sec, tv.tv_usec);
 	}
 
 	if (parent->ops->timeline_value_str &&

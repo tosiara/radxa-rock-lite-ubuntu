@@ -33,8 +33,7 @@ static unsigned long tainted_mask;
 static int pause_on_oops;
 static int pause_on_oops_flag;
 static DEFINE_SPINLOCK(pause_on_oops_lock);
-bool crash_kexec_post_notifiers;
-int panic_on_warn __read_mostly;
+static bool crash_kexec_post_notifiers;
 
 int panic_timeout = CONFIG_PANIC_TIMEOUT;
 EXPORT_SYMBOL_GPL(panic_timeout);
@@ -84,7 +83,6 @@ void panic(const char *fmt, ...)
 	 * after the panic_lock is acquired) from invoking panic again.
 	 */
 	local_irq_disable();
-	preempt_disable_notrace();
 
 	/*
 	 * It's possible to come here directly from a panic-assertion and
@@ -144,8 +142,7 @@ void panic(const char *fmt, ...)
 	 * Note: since some panic_notifiers can make crashed kernel
 	 * more unstable, it can increase risks of the kdump failure too.
 	 */
-	if (crash_kexec_post_notifiers)
-		crash_kexec(NULL);
+	crash_kexec(NULL);
 
 	bust_spinlocks(0);
 
@@ -168,7 +165,7 @@ void panic(const char *fmt, ...)
 		 * Delay timeout seconds before rebooting the machine.
 		 * We can't use the "normal" timers since we just panicked.
 		 */
-		pr_emerg("Rebooting in %d seconds..\n", panic_timeout);
+		pr_emerg("Rebooting in %d seconds..", panic_timeout);
 
 		for (i = 0; i < panic_timeout * 1000; i += PANIC_TIMER_STEP) {
 			touch_nmi_watchdog();
@@ -240,7 +237,6 @@ static const struct tnt tnts[] = {
 	{ TAINT_OOT_MODULE,		'O', ' ' },
 	{ TAINT_UNSIGNED_MODULE,	'E', ' ' },
 	{ TAINT_SOFTLOCKUP,		'L', ' ' },
-	{ TAINT_LIVEPATCH,		'K', ' ' },
 };
 
 /**
@@ -261,7 +257,6 @@ static const struct tnt tnts[] = {
  *  'O' - Out-of-tree module has been loaded.
  *  'E' - Unsigned module has been loaded.
  *  'L' - A soft lockup has previously occurred.
- *  'K' - Kernel has been live patched.
  *
  *	The string is overwritten by the next call to print_tainted().
  */
@@ -445,17 +440,6 @@ static void warn_slowpath_common(const char *file, int line, void *caller,
 	if (args)
 		vprintk(args->fmt, args->args);
 
-	if (panic_on_warn) {
-		/*
-		 * This thread may hit another WARN() in the panic path.
-		 * Resetting this prevents additional WARN() from panicking the
-		 * system on this thread.  Other threads are blocked by the
-		 * panic_mutex in panic().
-		 */
-		panic_on_warn = 0;
-		panic("panic_on_warn set ...\n");
-	}
-
 	print_modules();
 	dump_stack();
 	print_oops_end_marker();
@@ -513,7 +497,6 @@ EXPORT_SYMBOL(__stack_chk_fail);
 
 core_param(panic, panic_timeout, int, 0644);
 core_param(pause_on_oops, pause_on_oops, int, 0644);
-core_param(panic_on_warn, panic_on_warn, int, 0644);
 
 static int __init setup_crash_kexec_post_notifiers(char *s)
 {

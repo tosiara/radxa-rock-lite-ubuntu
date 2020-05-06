@@ -100,12 +100,12 @@ int ecryptfs_parse_packet_length(unsigned char *data, size_t *size,
 	(*size) = 0;
 	if (data[0] < 192) {
 		/* One-byte length */
-		(*size) = data[0];
+		(*size) = (unsigned char)data[0];
 		(*length_size) = 1;
 	} else if (data[0] < 224) {
 		/* Two-byte length */
-		(*size) = (data[0] - 192) * 256;
-		(*size) += data[1] + 192;
+		(*size) = (((unsigned char)(data[0]) - 192) * 256);
+		(*size) += ((unsigned char)(data[1]) + 192);
 		(*length_size) = 2;
 	} else if (data[0] == 255) {
 		/* If support is added, adjust ECRYPTFS_MAX_PKT_LEN_SIZE */
@@ -898,7 +898,7 @@ struct ecryptfs_parse_tag_70_packet_silly_stack {
 	struct blkcipher_desc desc;
 	char fnek_sig_hex[ECRYPTFS_SIG_SIZE_HEX + 1];
 	char iv[ECRYPTFS_MAX_IV_BYTES];
-	char cipher_string[ECRYPTFS_MAX_CIPHER_NAME_SIZE + 1];
+	char cipher_string[ECRYPTFS_MAX_CIPHER_NAME_SIZE];
 };
 
 /**
@@ -1330,7 +1330,7 @@ parse_tag_1_packet(struct ecryptfs_crypt_stat *crypt_stat,
 		printk(KERN_WARNING "Tag 1 packet contains key larger "
 		       "than ECRYPTFS_MAX_ENCRYPTED_KEY_BYTES");
 		rc = -EINVAL;
-		goto out_free;
+		goto out;
 	}
 	memcpy((*new_auth_tok)->session_key.encrypted_key,
 	       &data[(*packet_size)], (body_size - (ECRYPTFS_SIG_SIZE + 2)));

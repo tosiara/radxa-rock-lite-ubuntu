@@ -40,12 +40,7 @@ static inline unsigned long xchg64(__volatile__ unsigned long *m, unsigned long 
 	return val;
 }
 
-#define xchg(ptr,x)							\
-({	__typeof__(*(ptr)) __ret;					\
-	__ret = (__typeof__(*(ptr)))					\
-		__xchg((unsigned long)(x), (ptr), sizeof(*(ptr)));	\
-	__ret;								\
-})
+#define xchg(ptr,x) ((__typeof__(*(ptr)))__xchg((unsigned long)(x),(ptr),sizeof(*(ptr))))
 
 void __xchg_called_with_bad_pointer(void);
 
@@ -69,6 +64,8 @@ static inline unsigned long __xchg(unsigned long x, __volatile__ void * ptr,
  */
 
 #include <asm-generic/cmpxchg-local.h>
+
+#define __HAVE_ARCH_CMPXCHG 1
 
 static inline unsigned long
 __cmpxchg_u32(volatile int *m, int old, int new)

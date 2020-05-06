@@ -109,8 +109,10 @@
 			"Headphone Jack", "HPOUTR",
 			"Ext Spk", "SPKOUTL",
 			"Ext Spk", "SPKOUTR",
-			"AMIC", "MICBIAS",
-			"IN3R", "AMIC";
+			"MICBIAS", "AMIC",
+			"IN3R", "MICBIAS",
+			"DMIC", "MICBIAS",
+			"DMICDAT", "DMIC";
 		mux-int-port = <2>;
 		mux-ext-port = <3>;
 	};
@@ -141,13 +143,6 @@
 	status = "okay";
 };
 
-&clks {
-	assigned-clocks = <&clks IMX6QDL_CLK_LDB_DI0_SEL>,
-			  <&clks IMX6QDL_CLK_LDB_DI1_SEL>;
-	assigned-clock-parents = <&clks IMX6QDL_CLK_PLL3_USB_OTG>,
-				 <&clks IMX6QDL_CLK_PLL3_USB_OTG>;
-};
-
 &ecspi1 {
 	fsl,spi-num-chipselects = <1>;
 	cs-gpios = <&gpio4 9 0>;
@@ -158,7 +153,7 @@
 	flash: m25p80@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		compatible = "st,m25p32", "jedec,spi-nor";
+		compatible = "st,m25p32";
 		spi-max-frequency = <20000000>;
 		reg = <0>;
 	};
@@ -186,7 +181,7 @@
 	codec: wm8962@1a {
 		compatible = "wlf,wm8962";
 		reg = <0x1a>;
-		clocks = <&clks IMX6QDL_CLK_CKO>;
+		clocks = <&clks 201>;
 		DCVDD-supply = <&reg_audio>;
 		DBVDD-supply = <&reg_audio>;
 		AVDD-supply = <&reg_audio>;
@@ -538,10 +533,6 @@
 	status = "okay";
 };
 
-&snvs_poweroff {
-	status = "okay";
-};
-
 &ssi2 {
 	status = "okay";
 };
@@ -569,8 +560,8 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_usdhc2>;
 	bus-width = <8>;
-	cd-gpios = <&gpio2 2 GPIO_ACTIVE_LOW>;
-	wp-gpios = <&gpio2 3 GPIO_ACTIVE_HIGH>;
+	cd-gpios = <&gpio2 2 0>;
+	wp-gpios = <&gpio2 3 0>;
 	status = "okay";
 };
 
@@ -578,8 +569,8 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_usdhc3>;
 	bus-width = <8>;
-	cd-gpios = <&gpio2 0 GPIO_ACTIVE_LOW>;
-	wp-gpios = <&gpio2 1 GPIO_ACTIVE_HIGH>;
+	cd-gpios = <&gpio2 0 0>;
+	wp-gpios = <&gpio2 1 0>;
 	status = "okay";
 };
 

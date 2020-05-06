@@ -27,6 +27,7 @@
 struct brcmf_pub;
 struct brcmf_if;
 struct brcmf_cfg80211_info;
+struct brcmf_event;
 
 /* list of firmware events */
 #define BRCMF_FWEH_EVENT_ENUM_DEFLIST \
@@ -84,6 +85,7 @@ struct brcmf_cfg80211_info;
 	BRCMF_ENUM_DEF(IF, 54) \
 	BRCMF_ENUM_DEF(P2P_DISC_LISTEN_COMPLETE, 55) \
 	BRCMF_ENUM_DEF(RSSI, 56) \
+	BRCMF_ENUM_DEF(PFN_SCAN_COMPLETE, 57) \
 	BRCMF_ENUM_DEF(EXTLOG_MSG, 58) \
 	BRCMF_ENUM_DEF(ACTION_FRAME, 59) \
 	BRCMF_ENUM_DEF(ACTION_FRAME_COMPLETE, 60) \
@@ -101,7 +103,8 @@ struct brcmf_cfg80211_info;
 	BRCMF_ENUM_DEF(FIFO_CREDIT_MAP, 74) \
 	BRCMF_ENUM_DEF(ACTION_FRAME_RX, 75) \
 	BRCMF_ENUM_DEF(TDLS_PEER_EVENT, 92) \
-	BRCMF_ENUM_DEF(BCMC_CREDIT_SUPPORT, 127)
+	BRCMF_ENUM_DEF(BCMC_CREDIT_SUPPORT, 127) \
+	BRCMF_ENUM_DEF(PSTA_PRIMARY_INTF_IND, 128)
 
 #define BRCMF_ENUM_DEF(id, val) \
 	BRCMF_E_##id = (val),
@@ -109,11 +112,7 @@ struct brcmf_cfg80211_info;
 /* firmware event codes sent by the dongle */
 enum brcmf_fweh_event_code {
 	BRCMF_FWEH_EVENT_ENUM_DEFLIST
-	/* this determines event mask length which must match
-	 * minimum length check in device firmware so it is
-	 * hard-coded here.
-	 */
-	BRCMF_E_LAST = 139
+	BRCMF_E_LAST
 };
 #undef BRCMF_ENUM_DEF
 
@@ -179,53 +178,11 @@ enum brcmf_fweh_event_code {
 /**
  * definitions for event packet validation.
  */
-#define BRCM_OUI				"\x00\x10\x18"
-#define BCMILCP_BCM_SUBTYPE_EVENT		1
-#define BCMILCP_SUBTYPE_VENDOR_LONG		32769
+#define BRCMF_EVENT_OUI_OFFSET		19
+#define BRCM_OUI			"\x00\x10\x18"
+#define DOT11_OUI_LEN			3
+#define BCMILCP_BCM_SUBTYPE_EVENT	1
 
-/**
- * struct brcm_ethhdr - broadcom specific ether header.
- *
- * @subtype: subtype for this packet.
- * @length: TODO: length of appended data.
- * @version: version indication.
- * @oui: OUI of this packet.
- * @usr_subtype: subtype for this OUI.
- */
-struct brcm_ethhdr {
-	__be16 subtype;
-	__be16 length;
-	u8 version;
-	u8 oui[3];
-	__be16 usr_subtype;
-} __packed;
-
-struct brcmf_event_msg_be {
-	__be16 version;
-	__be16 flags;
-	__be32 event_type;
-	__be32 status;
-	__be32 reason;
-	__be32 auth_type;
-	__be32 datalen;
-	u8 addr[ETH_ALEN];
-	char ifname[IFNAMSIZ];
-	u8 ifidx;
-	u8 bsscfgidx;
-} __packed;
-
-/**
- * struct brcmf_event - contents of broadcom event packet.
- *
- * @eth: standard ether header.
- * @hdr: broadcom specific ether header.
- * @msg: common part of the actual event message.
- */
-struct brcmf_event {
-	struct ethhdr eth;
-	struct brcm_ethhdr hdr;
-	struct brcmf_event_msg_be msg;
-} __packed;
 
 /**
  * struct brcmf_event_msg - firmware event message.
@@ -271,14 +228,12 @@ typedef int (*brcmf_fweh_handler_t)(struct brcmf_if *ifp,
 /**
  * struct brcmf_fweh_info - firmware event handling information.
  *
- * @p2pdev_setup_ongoing: P2P device creation in progress.
  * @event_work: event worker.
  * @evt_q_lock: lock for event queue protection.
  * @event_q: event queue.
  * @evt_handler: registered event handlers.
  */
 struct brcmf_fweh_info {
-	bool p2pdev_setup_ongoing;
 	struct work_struct event_work;
 	spinlock_t evt_q_lock;
 	struct list_head event_q;
@@ -297,43 +252,33 @@ void brcmf_fweh_unregister(struct brcmf_pub *drvr,
 			   enum brcmf_fweh_event_code code);
 int brcmf_fweh_activate_events(struct brcmf_if *ifp);
 void brcmf_fweh_process_event(struct brcmf_pub *drvr,
-			      struct brcmf_event *event_packet,
-			      u32 packet_len);
-void brcmf_fweh_p2pdev_setup(struct brcmf_if *ifp, bool ongoing);
+			      struct brcmf_event *event_packet);
 
 static inline void brcmf_fweh_process_skb(struct brcmf_pub *drvr,
-					  struct sk_buff *skb, u16 stype)
+					  struct sk_buff *skb)
 {
 	struct brcmf_event *event_packet;
-	u16 subtype, usr_stype;
+	u8 *data;
+	u16 usr_stype;
 
 	/* only process events when protocol matches */
 	if (skb->protocol != cpu_to_be16(ETH_P_LINK_CTL))
 		return;
 
-	if ((skb->len + ETH_HLEN) < sizeof(*event_packet))
-		return;
-
-	event_packet = (struct brcmf_event *)skb_mac_header(skb);
-
-	/* check subtype if needed */
-	if (unlikely(stype)) {
-		subtype = get_unaligned_be16(&event_packet->hdr.subtype);
-		if (subtype != stype)
-			return;
-	}
-
 	/* check for BRCM oui match */
-	if (memcmp(BRCM_OUI, &event_packet->hdr.oui[0],
-		   sizeof(event_packet->hdr.oui)))
+	event_packet = (struct brcmf_event *)skb_mac_header(skb);
+	data = (u8 *)event_packet;
+	data += BRCMF_EVENT_OUI_OFFSET;
+	if (memcmp(BRCM_OUI, data, DOT11_OUI_LEN))
 		return;
 
 	/* final match on usr_subtype */
-	usr_stype = get_unaligned_be16(&event_packet->hdr.usr_subtype);
+	data += DOT11_OUI_LEN;
+	usr_stype = get_unaligned_be16(data);
 	if (usr_stype != BCMILCP_BCM_SUBTYPE_EVENT)
 		return;
 
-	brcmf_fweh_process_event(drvr, event_packet, skb->len + ETH_HLEN);
+	brcmf_fweh_process_event(drvr, event_packet);
 }
 
 #endif /* FWEH_H_ */

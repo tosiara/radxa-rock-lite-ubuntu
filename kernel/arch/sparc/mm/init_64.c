@@ -54,7 +54,6 @@
 #include "init_64.h"
 
 unsigned long kern_linear_pte_xor[4] __read_mostly;
-static unsigned long page_cache4v_flag;
 
 /* A bitmap, two bits for every 256MB of physical memory.  These two
  * bits determine what page size we use for kernel linear
@@ -92,8 +91,6 @@ static unsigned long cpu_pgsz_mask;
 
 static struct linux_prom64_registers pavail[MAX_BANKS];
 static int pavail_ents;
-
-u64 numa_latency[MAX_NUMNODES][MAX_NUMNODES];
 
 static int cmp_p64(const void *a, const void *b)
 {
@@ -324,6 +321,18 @@ static void __update_mmu_tsb_insert(struct mm_struct *mm, unsigned long tsb_inde
 	tsb_insert(tsb, tag, tte);
 }
 
+#if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
+static inline bool is_hugetlb_pte(pte_t pte)
+{
+	if ((tlb_type == hypervisor &&
+	     (pte_val(pte) & _PAGE_SZALL_4V) == _PAGE_SZHUGE_4V) ||
+	    (tlb_type != hypervisor &&
+	     (pte_val(pte) & _PAGE_SZALL_4U) == _PAGE_SZHUGE_4U))
+		return true;
+	return false;
+}
+#endif
+
 void update_mmu_cache(struct vm_area_struct *vma, unsigned long address, pte_t *ptep)
 {
 	struct mm_struct *mm;
@@ -346,8 +355,7 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long address, pte_t *
 	spin_lock_irqsave(&mm->context.lock, flags);
 
 #if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-	if ((mm->context.hugetlb_pte_count || mm->context.thp_pte_count) &&
-	    is_hugetlb_pte(pte))
+	if (mm->context.huge_pte_count && is_hugetlb_pte(pte))
 		__update_mmu_tsb_insert(mm, MM_TSB_HUGE, REAL_HPAGE_SHIFT,
 					address, pte_val(pte));
 	else
@@ -656,58 +664,10 @@ EXPORT_SYMBOL(__flush_dcache_range);
 
 /* get_new_mmu_context() uses "cache + 1".  */
 DEFINE_SPINLOCK(ctx_alloc_lock);
-unsigned long tlb_context_cache = CTX_FIRST_VERSION;
+unsigned long tlb_context_cache = CTX_FIRST_VERSION - 1;
 #define MAX_CTX_NR	(1UL << CTX_NR_BITS)
 #define CTX_BMAP_SLOTS	BITS_TO_LONGS(MAX_CTX_NR)
 DECLARE_BITMAP(mmu_context_bmap, MAX_CTX_NR);
-DEFINE_PER_CPU(struct mm_struct *, per_cpu_secondary_mm) = {0};
-
-static void mmu_context_wrap(void)
-{
-	unsigned long old_ver = tlb_context_cache & CTX_VERSION_MASK;
-	unsigned long new_ver, new_ctx, old_ctx;
-	struct mm_struct *mm;
-	int cpu;
-
-	bitmap_zero(mmu_context_bmap, 1 << CTX_NR_BITS);
-
-	/* Reserve kernel context */
-	set_bit(0, mmu_context_bmap);
-
-	new_ver = (tlb_context_cache & CTX_VERSION_MASK) + CTX_FIRST_VERSION;
-	if (unlikely(new_ver == 0))
-		new_ver = CTX_FIRST_VERSION;
-	tlb_context_cache = new_ver;
-
-	/*
-	 * Make sure that any new mm that are added into per_cpu_secondary_mm,
-	 * are going to go through get_new_mmu_context() path.
-	 */
-	mb();
-
-	/*
-	 * Updated versions to current on those CPUs that had valid secondary
-	 * contexts
-	 */
-	for_each_online_cpu(cpu) {
-		/*
-		 * If a new mm is stored after we took this mm from the array,
-		 * it will go into get_new_mmu_context() path, because we
-		 * already bumped the version in tlb_context_cache.
-		 */
-		mm = per_cpu(per_cpu_secondary_mm, cpu);
-
-		if (unlikely(!mm || mm == &init_mm))
-			continue;
-
-		old_ctx = mm->context.sparc64_ctx_val;
-		if (likely((old_ctx & CTX_VERSION_MASK) == old_ver)) {
-			new_ctx = (old_ctx & ~CTX_VERSION_MASK) | new_ver;
-			set_bit(new_ctx & CTX_NR_MASK, mmu_context_bmap);
-			mm->context.sparc64_ctx_val = new_ctx;
-		}
-	}
-}
 
 /* Caller does TLB context flushing on local CPU if necessary.
  * The caller also ensures that CTX_VALID(mm->context) is false.
@@ -723,30 +683,48 @@ void get_new_mmu_context(struct mm_struct *mm)
 {
 	unsigned long ctx, new_ctx;
 	unsigned long orig_pgsz_bits;
+	int new_version;
 
 	spin_lock(&ctx_alloc_lock);
-retry:
-	/* wrap might have happened, test again if our context became valid */
-	if (unlikely(CTX_VALID(mm->context)))
-		goto out;
 	orig_pgsz_bits = (mm->context.sparc64_ctx_val & CTX_PGSZ_MASK);
 	ctx = (tlb_context_cache + 1) & CTX_NR_MASK;
 	new_ctx = find_next_zero_bit(mmu_context_bmap, 1 << CTX_NR_BITS, ctx);
+	new_version = 0;
 	if (new_ctx >= (1 << CTX_NR_BITS)) {
 		new_ctx = find_next_zero_bit(mmu_context_bmap, ctx, 1);
 		if (new_ctx >= ctx) {
-			mmu_context_wrap();
-			goto retry;
+			int i;
+			new_ctx = (tlb_context_cache & CTX_VERSION_MASK) +
+				CTX_FIRST_VERSION;
+			if (new_ctx == 1)
+				new_ctx = CTX_FIRST_VERSION;
+
+			/* Don't call memset, for 16 entries that's just
+			 * plain silly...
+			 */
+			mmu_context_bmap[0] = 3;
+			mmu_context_bmap[1] = 0;
+			mmu_context_bmap[2] = 0;
+			mmu_context_bmap[3] = 0;
+			for (i = 4; i < CTX_BMAP_SLOTS; i += 4) {
+				mmu_context_bmap[i + 0] = 0;
+				mmu_context_bmap[i + 1] = 0;
+				mmu_context_bmap[i + 2] = 0;
+				mmu_context_bmap[i + 3] = 0;
+			}
+			new_version = 1;
+			goto out;
 		}
 	}
-	if (mm->context.sparc64_ctx_val)
-		cpumask_clear(mm_cpumask(mm));
 	mmu_context_bmap[new_ctx>>6] |= (1UL << (new_ctx & 63));
 	new_ctx |= (tlb_context_cache & CTX_VERSION_MASK);
+out:
 	tlb_context_cache = new_ctx;
 	mm->context.sparc64_ctx_val = new_ctx | orig_pgsz_bits;
-out:
 	spin_unlock(&ctx_alloc_lock);
+
+	if (unlikely(new_version))
+		smp_new_mmu_context_version();
 }
 
 static int numa_enabled = 1;
@@ -830,10 +808,8 @@ struct mdesc_mblock {
 };
 static struct mdesc_mblock *mblocks;
 static int num_mblocks;
-static int find_numa_node_for_addr(unsigned long pa,
-				   struct node_mem_mask *pnode_mask);
 
-static unsigned long __init ra_to_pa(unsigned long addr)
+static unsigned long ra_to_pa(unsigned long addr)
 {
 	int i;
 
@@ -849,11 +825,8 @@ static unsigned long __init ra_to_pa(unsigned long addr)
 	return addr;
 }
 
-static int __init find_node(unsigned long addr)
+static int find_node(unsigned long addr)
 {
-	static bool search_mdesc = true;
-	static struct node_mem_mask last_mem_mask = { ~0UL, ~0UL };
-	static int last_index;
 	int i;
 
 	addr = ra_to_pa(addr);
@@ -863,30 +836,13 @@ static int __init find_node(unsigned long addr)
 		if ((addr & p->mask) == p->val)
 			return i;
 	}
-	/* The following condition has been observed on LDOM guests because
-	 * node_masks only contains the best latency mask and value.
-	 * LDOM guest's mdesc can contain a single latency group to
-	 * cover multiple address range. Print warning message only if the
-	 * address cannot be found in node_masks nor mdesc.
-	 */
-	if ((search_mdesc) &&
-	    ((addr & last_mem_mask.mask) != last_mem_mask.val)) {
-		/* find the available node in the mdesc */
-		last_index = find_numa_node_for_addr(addr, &last_mem_mask);
-		numadbg("find_node: latency group for address 0x%lx is %d\n",
-			addr, last_index);
-		if ((last_index < 0) || (last_index >= num_node_masks)) {
-			/* WARN_ONCE() and use default group 0 */
-			WARN_ONCE(1, "find_node: A physical address doesn't match a NUMA node rule. Some physical memory will be owned by node 0.");
-			search_mdesc = false;
-			last_index = 0;
-		}
-	}
-
-	return last_index;
+	/* The following condition has been observed on LDOM guests.*/
+	WARN_ONCE(1, "find_node: A physical address doesn't match a NUMA node"
+		" rule. Some physical memory will be owned by node 0.");
+	return 0;
 }
 
-static u64 __init memblock_nid_range(u64 start, u64 end, int *nid)
+static u64 memblock_nid_range(u64 start, u64 end, int *nid)
 {
 	*nid = find_node(start);
 	start += PAGE_SIZE;
@@ -1200,83 +1156,6 @@ static struct mdesc_mlgroup * __init find_mlgroup(u64 node)
 	return NULL;
 }
 
-int __node_distance(int from, int to)
-{
-	if ((from >= MAX_NUMNODES) || (to >= MAX_NUMNODES)) {
-		pr_warn("Returning default NUMA distance value for %d->%d\n",
-			from, to);
-		return (from == to) ? LOCAL_DISTANCE : REMOTE_DISTANCE;
-	}
-	return numa_latency[from][to];
-}
-
-static int find_numa_node_for_addr(unsigned long pa,
-				   struct node_mem_mask *pnode_mask)
-{
-	struct mdesc_handle *md = mdesc_grab();
-	u64 node, arc;
-	int i = 0;
-
-	node = mdesc_node_by_name(md, MDESC_NODE_NULL, "latency-groups");
-	if (node == MDESC_NODE_NULL)
-		goto out;
-
-	mdesc_for_each_node_by_name(md, node, "group") {
-		mdesc_for_each_arc(arc, md, node, MDESC_ARC_TYPE_FWD) {
-			u64 target = mdesc_arc_target(md, arc);
-			struct mdesc_mlgroup *m = find_mlgroup(target);
-
-			if (!m)
-				continue;
-			if ((pa & m->mask) == m->match) {
-				if (pnode_mask) {
-					pnode_mask->mask = m->mask;
-					pnode_mask->val = m->match;
-				}
-				mdesc_release(md);
-				return i;
-			}
-		}
-		i++;
-	}
-
-out:
-	mdesc_release(md);
-	return -1;
-}
-
-static int find_best_numa_node_for_mlgroup(struct mdesc_mlgroup *grp)
-{
-	int i;
-
-	for (i = 0; i < MAX_NUMNODES; i++) {
-		struct node_mem_mask *n = &node_masks[i];
-
-		if ((grp->mask == n->mask) && (grp->match == n->val))
-			break;
-	}
-	return i;
-}
-
-static void find_numa_latencies_for_group(struct mdesc_handle *md, u64 grp,
-					  int index)
-{
-	u64 arc;
-
-	mdesc_for_each_arc(arc, md, grp, MDESC_ARC_TYPE_FWD) {
-		int tnode;
-		u64 target = mdesc_arc_target(md, arc);
-		struct mdesc_mlgroup *m = find_mlgroup(target);
-
-		if (!m)
-			continue;
-		tnode = find_best_numa_node_for_mlgroup(m);
-		if (tnode == MAX_NUMNODES)
-			continue;
-		numa_latency[index][tnode] = m->latency;
-	}
-}
-
 static int __init numa_attach_mlgroup(struct mdesc_handle *md, u64 grp,
 				      int index)
 {
@@ -1340,7 +1219,7 @@ static int __init numa_parse_mdesc_group(struct mdesc_handle *md, u64 grp,
 static int __init numa_parse_mdesc(void)
 {
 	struct mdesc_handle *md = mdesc_grab();
-	int i, j, err, count;
+	int i, err, count;
 	u64 node;
 
 	node = mdesc_node_by_name(md, MDESC_NODE_NULL, "latency-groups");
@@ -1363,23 +1242,6 @@ static int __init numa_parse_mdesc(void)
 		if (err < 0)
 			break;
 		count++;
-	}
-
-	count = 0;
-	mdesc_for_each_node_by_name(md, node, "group") {
-		find_numa_latencies_for_group(md, node, count);
-		count++;
-	}
-
-	/* Normalize numa latency matrix according to ACPI SLIT spec. */
-	for (i = 0; i < MAX_NUMNODES; i++) {
-		u64 self_latency = numa_latency[i][i];
-
-		for (j = 0; j < MAX_NUMNODES; j++) {
-			numa_latency[i][j] =
-				(numa_latency[i][j] * LOCAL_DISTANCE) /
-				self_latency;
-		}
 	}
 
 	add_node_ranges();
@@ -1438,17 +1300,9 @@ static int __init numa_parse_sun4u(void)
 
 static int __init bootmem_init_numa(void)
 {
-	int i, j;
 	int err = -1;
 
 	numadbg("bootmem_init_numa()\n");
-
-	/* Some sane defaults for numa latency values */
-	for (i = 0; i < MAX_NUMNODES; i++) {
-		for (j = 0; j < MAX_NUMNODES; j++)
-			numa_latency[i][j] = (i == j) ?
-				LOCAL_DISTANCE : REMOTE_DISTANCE;
-	}
 
 	if (numa_enabled) {
 		if (tlb_type == hypervisor)
@@ -1767,7 +1621,7 @@ static void __init kernel_physical_mapping_init(void)
 }
 
 #ifdef CONFIG_DEBUG_PAGEALLOC
-void __kernel_map_pages(struct page *page, int numpages, int enable)
+void kernel_map_pages(struct page *page, int numpages, int enable)
 {
 	unsigned long phys_start = page_to_pfn(page) << PAGE_SHIFT;
 	unsigned long phys_end = phys_start + (numpages * PAGE_SIZE);
@@ -2055,24 +1909,11 @@ static void __init sun4u_linear_pte_xor_finalize(void)
 
 static void __init sun4v_linear_pte_xor_finalize(void)
 {
-	unsigned long pagecv_flag;
-
-	/* Bit 9 of TTE is no longer CV bit on M7 processor and it instead
-	 * enables MCD error. Do not set bit 9 on M7 processor.
-	 */
-	switch (sun4v_chip_type) {
-	case SUN4V_CHIP_SPARC_M7:
-		pagecv_flag = 0x00;
-		break;
-	default:
-		pagecv_flag = _PAGE_CV_4V;
-		break;
-	}
 #ifndef CONFIG_DEBUG_PAGEALLOC
 	if (cpu_pgsz_mask & HV_PGSZ_MASK_256MB) {
 		kern_linear_pte_xor[1] = (_PAGE_VALID | _PAGE_SZ256MB_4V) ^
 			PAGE_OFFSET;
-		kern_linear_pte_xor[1] |= (_PAGE_CP_4V | pagecv_flag |
+		kern_linear_pte_xor[1] |= (_PAGE_CP_4V | _PAGE_CV_4V |
 					   _PAGE_P_4V | _PAGE_W_4V);
 	} else {
 		kern_linear_pte_xor[1] = kern_linear_pte_xor[0];
@@ -2081,7 +1922,7 @@ static void __init sun4v_linear_pte_xor_finalize(void)
 	if (cpu_pgsz_mask & HV_PGSZ_MASK_2GB) {
 		kern_linear_pte_xor[2] = (_PAGE_VALID | _PAGE_SZ2GB_4V) ^
 			PAGE_OFFSET;
-		kern_linear_pte_xor[2] |= (_PAGE_CP_4V | pagecv_flag |
+		kern_linear_pte_xor[2] |= (_PAGE_CP_4V | _PAGE_CV_4V |
 					   _PAGE_P_4V | _PAGE_W_4V);
 	} else {
 		kern_linear_pte_xor[2] = kern_linear_pte_xor[1];
@@ -2090,7 +1931,7 @@ static void __init sun4v_linear_pte_xor_finalize(void)
 	if (cpu_pgsz_mask & HV_PGSZ_MASK_16GB) {
 		kern_linear_pte_xor[3] = (_PAGE_VALID | _PAGE_SZ16GB_4V) ^
 			PAGE_OFFSET;
-		kern_linear_pte_xor[3] |= (_PAGE_CP_4V | pagecv_flag |
+		kern_linear_pte_xor[3] |= (_PAGE_CP_4V | _PAGE_CV_4V |
 					   _PAGE_P_4V | _PAGE_W_4V);
 	} else {
 		kern_linear_pte_xor[3] = kern_linear_pte_xor[2];
@@ -2111,19 +1952,11 @@ static phys_addr_t __init available_memory(void)
 	phys_addr_t pa_start, pa_end;
 	u64 i;
 
-	for_each_free_mem_range(i, NUMA_NO_NODE, MEMBLOCK_NONE, &pa_start,
-				&pa_end, NULL)
+	for_each_free_mem_range(i, NUMA_NO_NODE, &pa_start, &pa_end, NULL)
 		available = available + (pa_end  - pa_start);
 
 	return available;
 }
-
-#define _PAGE_CACHE_4U	(_PAGE_CP_4U | _PAGE_CV_4U)
-#define _PAGE_CACHE_4V	(_PAGE_CP_4V | _PAGE_CV_4V)
-#define __DIRTY_BITS_4U	 (_PAGE_MODIFIED_4U | _PAGE_WRITE_4U | _PAGE_W_4U)
-#define __DIRTY_BITS_4V	 (_PAGE_MODIFIED_4V | _PAGE_WRITE_4V | _PAGE_W_4V)
-#define __ACCESS_BITS_4U (_PAGE_ACCESSED_4U | _PAGE_READ_4U | _PAGE_R)
-#define __ACCESS_BITS_4V (_PAGE_ACCESSED_4V | _PAGE_READ_4V | _PAGE_R)
 
 /* We need to exclude reserved regions. This exclusion will include
  * vmlinux and initrd. To be more precise the initrd size could be used to
@@ -2138,8 +1971,7 @@ static void __init reduce_memory(phys_addr_t limit_ram)
 	if (limit_ram >= avail_ram)
 		return;
 
-	for_each_free_mem_range(i, NUMA_NO_NODE, MEMBLOCK_NONE, &pa_start,
-				&pa_end, NULL) {
+	for_each_free_mem_range(i, NUMA_NO_NODE, &pa_start, &pa_end, NULL) {
 		phys_addr_t region_size = pa_end - pa_start;
 		phys_addr_t clip_start = pa_start;
 
@@ -2201,25 +2033,6 @@ void __init paging_init(void)
 #ifndef CONFIG_DEBUG_PAGEALLOC
 	memset(swapper_4m_tsb, 0x40, sizeof(swapper_4m_tsb));
 #endif
-
-	/* TTE.cv bit on sparc v9 occupies the same position as TTE.mcde
-	 * bit on M7 processor. This is a conflicting usage of the same
-	 * bit. Enabling TTE.cv on M7 would turn on Memory Corruption
-	 * Detection error on all pages and this will lead to problems
-	 * later. Kernel does not run with MCD enabled and hence rest
-	 * of the required steps to fully configure memory corruption
-	 * detection are not taken. We need to ensure TTE.mcde is not
-	 * set on M7 processor. Compute the value of cacheability
-	 * flag for use later taking this into consideration.
-	 */
-	switch (sun4v_chip_type) {
-	case SUN4V_CHIP_SPARC_M7:
-		page_cache4v_flag = _PAGE_CP_4V;
-		break;
-	default:
-		page_cache4v_flag = _PAGE_CACHE_4V;
-		break;
-	}
 
 	if (tlb_type == hypervisor)
 		sun4v_pgprot_init();
@@ -2468,6 +2281,13 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 }
 #endif
 
+#define _PAGE_CACHE_4U	(_PAGE_CP_4U | _PAGE_CV_4U)
+#define _PAGE_CACHE_4V	(_PAGE_CP_4V | _PAGE_CV_4V)
+#define __DIRTY_BITS_4U	 (_PAGE_MODIFIED_4U | _PAGE_WRITE_4U | _PAGE_W_4U)
+#define __DIRTY_BITS_4V	 (_PAGE_MODIFIED_4V | _PAGE_WRITE_4V | _PAGE_W_4V)
+#define __ACCESS_BITS_4U (_PAGE_ACCESSED_4U | _PAGE_READ_4U | _PAGE_R)
+#define __ACCESS_BITS_4V (_PAGE_ACCESSED_4V | _PAGE_READ_4V | _PAGE_R)
+
 pgprot_t PAGE_KERNEL __read_mostly;
 EXPORT_SYMBOL(PAGE_KERNEL);
 
@@ -2499,7 +2319,8 @@ int __meminit vmemmap_populate(unsigned long vstart, unsigned long vend,
 		    _PAGE_P_4U | _PAGE_W_4U);
 	if (tlb_type == hypervisor)
 		pte_base = (_PAGE_VALID | _PAGE_SZ4MB_4V |
-			    page_cache4v_flag | _PAGE_P_4V | _PAGE_W_4V);
+			    _PAGE_CP_4V | _PAGE_CV_4V |
+			    _PAGE_P_4V | _PAGE_W_4V);
 
 	pte_base |= _PAGE_PMD_HUGE;
 
@@ -2636,14 +2457,14 @@ static void __init sun4v_pgprot_init(void)
 	int i;
 
 	PAGE_KERNEL = __pgprot (_PAGE_PRESENT_4V | _PAGE_VALID |
-				page_cache4v_flag | _PAGE_P_4V |
+				_PAGE_CACHE_4V | _PAGE_P_4V |
 				__ACCESS_BITS_4V | __DIRTY_BITS_4V |
 				_PAGE_EXEC_4V);
 	PAGE_KERNEL_LOCKED = PAGE_KERNEL;
 
 	_PAGE_IE = _PAGE_IE_4V;
 	_PAGE_E = _PAGE_E_4V;
-	_PAGE_CACHE = page_cache4v_flag;
+	_PAGE_CACHE = _PAGE_CACHE_4V;
 
 #ifdef CONFIG_DEBUG_PAGEALLOC
 	kern_linear_pte_xor[0] = _PAGE_VALID ^ PAGE_OFFSET;
@@ -2651,8 +2472,8 @@ static void __init sun4v_pgprot_init(void)
 	kern_linear_pte_xor[0] = (_PAGE_VALID | _PAGE_SZ4MB_4V) ^
 		PAGE_OFFSET;
 #endif
-	kern_linear_pte_xor[0] |= (page_cache4v_flag | _PAGE_P_4V |
-				   _PAGE_W_4V);
+	kern_linear_pte_xor[0] |= (_PAGE_CP_4V | _PAGE_CV_4V |
+				   _PAGE_P_4V | _PAGE_W_4V);
 
 	for (i = 1; i < 4; i++)
 		kern_linear_pte_xor[i] = kern_linear_pte_xor[0];
@@ -2665,12 +2486,12 @@ static void __init sun4v_pgprot_init(void)
 			     _PAGE_SZ4MB_4V | _PAGE_SZ512K_4V |
 			     _PAGE_SZ64K_4V | _PAGE_SZ8K_4V);
 
-	page_none = _PAGE_PRESENT_4V | _PAGE_ACCESSED_4V | page_cache4v_flag;
-	page_shared = (_PAGE_VALID | _PAGE_PRESENT_4V | page_cache4v_flag |
+	page_none = _PAGE_PRESENT_4V | _PAGE_ACCESSED_4V | _PAGE_CACHE_4V;
+	page_shared = (_PAGE_VALID | _PAGE_PRESENT_4V | _PAGE_CACHE_4V |
 		       __ACCESS_BITS_4V | _PAGE_WRITE_4V | _PAGE_EXEC_4V);
-	page_copy   = (_PAGE_VALID | _PAGE_PRESENT_4V | page_cache4v_flag |
+	page_copy   = (_PAGE_VALID | _PAGE_PRESENT_4V | _PAGE_CACHE_4V |
 		       __ACCESS_BITS_4V | _PAGE_EXEC_4V);
-	page_readonly = (_PAGE_VALID | _PAGE_PRESENT_4V | page_cache4v_flag |
+	page_readonly = (_PAGE_VALID | _PAGE_PRESENT_4V | _PAGE_CACHE_4V |
 			 __ACCESS_BITS_4V | _PAGE_EXEC_4V);
 
 	page_exec_bit = _PAGE_EXEC_4V;
@@ -2728,7 +2549,7 @@ static unsigned long kern_large_tte(unsigned long paddr)
 	       _PAGE_EXEC_4U | _PAGE_L_4U | _PAGE_W_4U);
 	if (tlb_type == hypervisor)
 		val = (_PAGE_VALID | _PAGE_SZ4MB_4V |
-		       page_cache4v_flag | _PAGE_P_4V |
+		       _PAGE_CP_4V | _PAGE_CV_4V | _PAGE_P_4V |
 		       _PAGE_EXEC_4V | _PAGE_W_4V);
 
 	return val | paddr;
@@ -2892,7 +2713,7 @@ void hugetlb_setup(struct pt_regs *regs)
 	struct mm_struct *mm = current->mm;
 	struct tsb_config *tp;
 
-	if (faulthandler_disabled() || !mm) {
+	if (in_atomic() || !mm) {
 		const struct exception_table_entry *entry;
 
 		entry = search_exception_tables(regs->tpc);
@@ -3010,7 +2831,7 @@ static int __init report_memory(void)
 
 	return 0;
 }
-arch_initcall(report_memory);
+device_initcall(report_memory);
 
 #ifdef CONFIG_SMP
 #define do_flush_tlb_kernel_range	smp_flush_tlb_kernel_range

@@ -167,6 +167,9 @@ static void mtd_blktrans_work(struct work_struct *work)
 		background_done = 0;
 	}
 
+	if (req)
+		__blk_end_request_all(req, -EIO);
+
 	spin_unlock_irq(rq->queue_lock);
 }
 
@@ -274,7 +277,7 @@ static int blktrans_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 	if (!dev->mtd)
 		goto unlock;
 
-	ret = dev->tr->getgeo ? dev->tr->getgeo(dev, geo) : -ENOTTY;
+	ret = dev->tr->getgeo ? dev->tr->getgeo(dev, geo) : 0;
 unlock:
 	mutex_unlock(&dev->lock);
 	blktrans_dev_put(dev);
@@ -399,7 +402,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 		snprintf(gd->disk_name, sizeof(gd->disk_name),
 			 "%s%d", tr->name, new->devnum);
 
-	set_capacity(gd, ((u64)new->size * tr->blksize) >> 9);
+	set_capacity(gd, (new->size * tr->blksize) >> 9);
 
 	/* Create the request queue */
 	spin_lock_init(&new->queue_lock);
@@ -419,7 +422,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 
 	if (tr->discard) {
 		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, new->rq);
-		blk_queue_max_discard_sectors(new->rq, UINT_MAX);
+		new->rq->limits.max_discard_sectors = UINT_MAX;
 	}
 
 	gd->queue = new->rq;

@@ -18,7 +18,6 @@
 #include <linux/freezer.h>
 #include <linux/ptrace.h>
 #include <linux/uaccess.h>
-#include <linux/cgroup.h>
 #include <trace/events/sched.h>
 
 static DEFINE_SPINLOCK(kthread_create_lock);
@@ -98,7 +97,6 @@ bool kthread_should_park(void)
 {
 	return test_bit(KTHREAD_SHOULD_PARK, &to_kthread(current)->flags);
 }
-EXPORT_SYMBOL_GPL(kthread_should_park);
 
 /**
  * kthread_freezable_should_stop - should this freezable kthread return now?
@@ -158,12 +156,13 @@ void *probe_kthread_data(struct task_struct *task)
 
 static void __kthread_parkme(struct kthread *self)
 {
-	__set_current_state(TASK_PARKED);
-	while (test_bit(KTHREAD_SHOULD_PARK, &self->flags)) {
+	for (;;) {
+		set_current_state(TASK_PARKED);
+		if (!test_bit(KTHREAD_SHOULD_PARK, &self->flags))
+			break;
 		if (!test_and_set_bit(KTHREAD_IS_PARKED, &self->flags))
 			complete(&self->parked);
 		schedule();
-		__set_current_state(TASK_PARKED);
 	}
 	clear_bit(KTHREAD_IS_PARKED, &self->flags);
 	__set_current_state(TASK_RUNNING);
@@ -173,7 +172,6 @@ void kthread_parkme(void)
 {
 	__kthread_parkme(to_kthread(current));
 }
-EXPORT_SYMBOL_GPL(kthread_parkme);
 
 static int kthread(void *_create)
 {
@@ -206,7 +204,6 @@ static int kthread(void *_create)
 	ret = -EINTR;
 
 	if (!test_bit(KTHREAD_SHOULD_STOP, &self.flags)) {
-		cgroup_kthread_ready();
 		__kthread_parkme(&self);
 		ret = threadfn(data);
 	}
@@ -250,16 +247,15 @@ static void create_kthread(struct kthread_create_info *create)
  * kthread_create_on_node - create a kthread.
  * @threadfn: the function to run until signal_pending(current).
  * @data: data ptr for @threadfn.
- * @node: task and thread structures for the thread are allocated on this node
+ * @node: memory node number.
  * @namefmt: printf-style name for the thread.
  *
  * Description: This helper function creates and names a kernel
  * thread.  The thread will be stopped: use wake_up_process() to start
- * it.  See also kthread_run().  The new thread has SCHED_NORMAL policy and
- * is affine to all CPUs.
+ * it.  See also kthread_run().
  *
  * If thread is going to be bound on a particular cpu, give its node
- * in @node, to get NUMA affinity for kthread stack, or else give NUMA_NO_NODE.
+ * in @node, to get NUMA affinity for kthread stack, or else give -1.
  * When woken, the thread will run @threadfn() with @data as its
  * argument. @threadfn() can either call do_exit() directly if it is a
  * standalone thread for which no one will call kthread_stop(), or
@@ -336,30 +332,16 @@ struct task_struct *kthread_create_on_node(int (*threadfn)(void *data),
 }
 EXPORT_SYMBOL(kthread_create_on_node);
 
-static void __kthread_bind_mask(struct task_struct *p, const struct cpumask *mask, long state)
+static void __kthread_bind(struct task_struct *p, unsigned int cpu, long state)
 {
-	unsigned long flags;
-
+	/* Must have done schedule() in kthread() before we set_task_cpu */
 	if (!wait_task_inactive(p, state)) {
 		WARN_ON(1);
 		return;
 	}
-
 	/* It's safe because the task is inactive. */
-	raw_spin_lock_irqsave(&p->pi_lock, flags);
-	do_set_cpus_allowed(p, mask);
+	do_set_cpus_allowed(p, cpumask_of(cpu));
 	p->flags |= PF_NO_SETAFFINITY;
-	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
-}
-
-static void __kthread_bind(struct task_struct *p, unsigned int cpu, long state)
-{
-	__kthread_bind_mask(p, cpumask_of(cpu), state);
-}
-
-void kthread_bind_mask(struct task_struct *p, const struct cpumask *mask)
-{
-	__kthread_bind_mask(p, mask, TASK_UNINTERRUPTIBLE);
 }
 
 /**
@@ -436,7 +418,6 @@ void kthread_unpark(struct task_struct *k)
 	if (kthread)
 		__kthread_unpark(k, kthread);
 }
-EXPORT_SYMBOL_GPL(kthread_unpark);
 
 /**
  * kthread_park - park a thread created by kthread_create().
@@ -467,7 +448,6 @@ int kthread_park(struct task_struct *k)
 	}
 	return ret;
 }
-EXPORT_SYMBOL_GPL(kthread_park);
 
 /**
  * kthread_stop - stop a thread created by kthread_create().
@@ -518,7 +498,6 @@ int kthreadd(void *unused)
 	set_mems_allowed(node_states[N_MEMORY]);
 
 	current->flags |= PF_NOFREEZE;
-	cgroup_init_kthreadd();
 
 	for (;;) {
 		set_current_state(TASK_INTERRUPTIBLE);

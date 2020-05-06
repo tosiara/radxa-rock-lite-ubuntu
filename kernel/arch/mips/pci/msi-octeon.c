@@ -178,7 +178,7 @@ msi_irq_allocated:
 	pci_write_config_word(dev, dev->msi_cap + PCI_MSI_FLAGS, control);
 
 	irq_set_msi_desc(irq, desc);
-	pci_write_msi_msg(irq, &msg);
+	write_msi_msg(irq, &msg);
 	return 0;
 }
 
@@ -200,7 +200,7 @@ int arch_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 	if (type == PCI_CAP_ID_MSI && nvec > 1)
 		return 1;
 
-	for_each_pci_msi_entry(entry, dev) {
+	list_for_each_entry(entry, &dev->msi_list, list) {
 		ret = arch_setup_msi_irq(dev, entry);
 		if (ret < 0)
 			return ret;

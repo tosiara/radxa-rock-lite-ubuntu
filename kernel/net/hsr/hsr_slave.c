@@ -30,8 +30,6 @@ static rx_handler_result_t hsr_handle_frame(struct sk_buff **pskb)
 
 	rcu_read_lock(); /* hsr->node_db, hsr->ports */
 	port = hsr_port_get_rcu(skb->dev);
-	if (!port)
-		goto finish_pass;
 
 	if (hsr_addr_is_self(port->hsr, eth_hdr(skb)->h_source)) {
 		/* Directly kill frames sent by ourselves */
@@ -149,15 +147,15 @@ int hsr_add_port(struct hsr_priv *hsr, struct net_device *dev,
 	if (port == NULL)
 		return -ENOMEM;
 
-	port->hsr = hsr;
-	port->dev = dev;
-	port->type = type;
-
 	if (type != HSR_PT_MASTER) {
 		res = hsr_portdev_setup(dev, port);
 		if (res)
 			goto fail_dev_setup;
 	}
+
+	port->hsr = hsr;
+	port->dev = dev;
+	port->type = type;
 
 	list_add_tail_rcu(&port->port_list, &hsr->ports);
 	synchronize_rcu();
@@ -183,10 +181,8 @@ void hsr_del_port(struct hsr_port *port)
 	list_del_rcu(&port->port_list);
 
 	if (port != master) {
-		if (master != NULL) {
-			netdev_update_features(master->dev);
-			dev_set_mtu(master->dev, hsr_get_max_mtu(hsr));
-		}
+		netdev_update_features(master->dev);
+		dev_set_mtu(master->dev, hsr_get_max_mtu(hsr));
 		netdev_rx_handler_unregister(port->dev);
 		dev_set_promiscuity(port->dev, -1);
 	}
@@ -196,7 +192,5 @@ void hsr_del_port(struct hsr_port *port)
 	 */
 
 	synchronize_rcu();
-
-	if (port != master)
-		dev_put(port->dev);
+	dev_put(port->dev);
 }

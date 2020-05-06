@@ -5,14 +5,11 @@
 
 #include <linux/io.h>
 #include <linux/sched.h>
-#include <linux/random.h>
 #include <asm/processor.h>
 #include <asm/apic.h>
 #include <asm/cpu.h>
-#include <asm/spec-ctrl.h>
 #include <asm/smp.h>
 #include <asm/pci-direct.h>
-#include <asm/delay.h>
 
 #ifdef CONFIG_X86_64
 # include <asm/mmconfig.h>
@@ -20,13 +17,6 @@
 #endif
 
 #include "cpu.h"
-
-/*
- * nodes_per_socket: Stores the number of nodes per socket.
- * Refer to Fam15h Models 00-0fh BKDG - CPUID Fn8000_001E_ECX
- * Node Identifiers[10:8]
- */
-static u32 nodes_per_socket = 1;
 
 static inline int rdmsrl_amd_safe(unsigned msr, unsigned long long *p)
 {
@@ -116,7 +106,7 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 		const int K6_BUG_LOOP = 1000000;
 		int n;
 		void (*f_vide)(void);
-		u64 d, d2;
+		unsigned long d, d2;
 
 		printk(KERN_INFO "AMD K6 stepping B detected - ");
 
@@ -127,10 +117,10 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 
 		n = K6_BUG_LOOP;
 		f_vide = vide;
-		d = rdtsc();
+		rdtscl(d);
 		while (n--)
 			f_vide();
-		d2 = rdtsc();
+		rdtscl(d2);
 		d = d2-d;
 
 		if (d > 20*K6_BUG_LOOP)
@@ -297,19 +287,19 @@ static int nearby_node(int apicid)
  *     Assumption: Number of cores in each internal node is the same.
  * (2) AMD processors supporting compute units
  */
-#ifdef CONFIG_SMP
+#ifdef CONFIG_X86_HT
 static void amd_get_topology(struct cpuinfo_x86 *c)
 {
-	u32 cores_per_cu = 1;
+	u32 nodes, cores_per_cu = 1;
 	u8 node_id;
 	int cpu = smp_processor_id();
 
 	/* get information required for multi-node processors */
-	if (boot_cpu_has(X86_FEATURE_TOPOEXT)) {
+	if (cpu_has_topoext) {
 		u32 eax, ebx, ecx, edx;
 
 		cpuid(0x8000001e, &eax, &ebx, &ecx, &edx);
-		nodes_per_socket = ((ecx >> 8) & 7) + 1;
+		nodes = ((ecx >> 8) & 7) + 1;
 		node_id = ecx & 7;
 
 		/* get compute unit information */
@@ -320,18 +310,18 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
 		u64 value;
 
 		rdmsrl(MSR_FAM10H_NODE_ID, value);
-		nodes_per_socket = ((value >> 3) & 7) + 1;
+		nodes = ((value >> 3) & 7) + 1;
 		node_id = value & 7;
 	} else
 		return;
 
 	/* fixup multi-node processor information */
-	if (nodes_per_socket > 1) {
+	if (nodes > 1) {
 		u32 cores_per_node;
 		u32 cus_per_node;
 
 		set_cpu_cap(c, X86_FEATURE_AMD_DCM);
-		cores_per_node = c->x86_max_cores / nodes_per_socket;
+		cores_per_node = c->x86_max_cores / nodes;
 		cus_per_node = cores_per_node / cores_per_cu;
 
 		/* store NodeID, use llc_shared_map to store sibling info */
@@ -350,7 +340,7 @@ static void amd_get_topology(struct cpuinfo_x86 *c)
  */
 static void amd_detect_cmp(struct cpuinfo_x86 *c)
 {
-#ifdef CONFIG_SMP
+#ifdef CONFIG_X86_HT
 	unsigned bits;
 	int cpu = smp_processor_id();
 
@@ -362,15 +352,6 @@ static void amd_detect_cmp(struct cpuinfo_x86 *c)
 	/* use socket ID also for last level cache */
 	per_cpu(cpu_llc_id, cpu) = c->phys_proc_id;
 	amd_get_topology(c);
-
-	/*
-	 * Fix percpu cpu_llc_id here as LLC topology is different
-	 * for Fam17h systems.
-	 */
-	 if (c->x86 != 0x17 || !cpuid_edx(0x80000006))
-		return;
-
-	per_cpu(cpu_llc_id, cpu) = c->apicid >> 3;
 #endif
 }
 
@@ -383,12 +364,6 @@ u16 amd_get_nb_id(int cpu)
 	return id;
 }
 EXPORT_SYMBOL_GPL(amd_get_nb_id);
-
-u32 amd_get_nodes_per_socket(void)
-{
-	return nodes_per_socket;
-}
-EXPORT_SYMBOL_GPL(amd_get_nodes_per_socket);
 
 static void srat_detect_node(struct cpuinfo_x86 *c)
 {
@@ -444,7 +419,7 @@ static void srat_detect_node(struct cpuinfo_x86 *c)
 
 static void early_init_amd_mc(struct cpuinfo_x86 *c)
 {
-#ifdef CONFIG_SMP
+#ifdef CONFIG_X86_HT
 	unsigned bits, ecx;
 
 	/* Multi core CPU? */
@@ -513,32 +488,6 @@ static void bsp_init_amd(struct cpuinfo_x86 *c)
 
 		va_align.mask	  = (upperbit - 1) & PAGE_MASK;
 		va_align.flags    = ALIGN_VA_32 | ALIGN_VA_64;
-
-		/* A random value per boot for bit slice [12:upper_bit) */
-		va_align.bits = get_random_int() & va_align.mask;
-	}
-
-	if (cpu_has(c, X86_FEATURE_MWAITX))
-		use_mwaitx_delay();
-
-	if (c->x86 >= 0x15 && c->x86 <= 0x17) {
-		unsigned int bit;
-
-		switch (c->x86) {
-		case 0x15: bit = 54; break;
-		case 0x16: bit = 33; break;
-		case 0x17: bit = 10; break;
-		default: return;
-		}
-		/*
-		 * Try to cache the base value so further operations can
-		 * avoid RMW. If that faults, do not enable SSBD.
-		 */
-		if (!rdmsrl_safe(MSR_AMD64_LS_CFG, &x86_amd_ls_cfg_base)) {
-			setup_force_cpu_cap(X86_FEATURE_LS_CFG_SSBD);
-			setup_force_cpu_cap(X86_FEATURE_SSBD);
-			x86_amd_ls_cfg_ssbd_mask = 1ULL << bit;
-		}
 	}
 }
 
@@ -567,16 +516,8 @@ static void early_init_amd(struct cpuinfo_x86 *c)
 			set_cpu_cap(c, X86_FEATURE_K6_MTRR);
 #endif
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_PCI)
-	/*
-	 * ApicID can always be treated as an 8-bit value for AMD APIC versions
-	 * >= 0x10, but even old K8s came out of reset with version 0x10. So, we
-	 * can safely set X86_FEATURE_EXTD_APICID unconditionally for families
-	 * after 16h.
-	 */
-	if (cpu_has_apic && c->x86 > 0x16) {
-		set_cpu_cap(c, X86_FEATURE_EXTD_APICID);
-	} else if (cpu_has_apic && c->x86 >= 0xf) {
-		/* check CPU config space for extended APIC ID */
+	/* check CPU config space for extended APIC ID */
+	if (cpu_has_apic && c->x86 >= 0xf) {
 		unsigned int val;
 		val = read_pci_config(0, 24, 0, 0x68);
 		if ((val & ((1 << 17) | (1 << 18))) == ((1 << 17) | (1 << 18)))
@@ -625,17 +566,6 @@ static void init_amd_k8(struct cpuinfo_x86 *c)
 
 	if (!c->x86_model_id[0])
 		strcpy(c->x86_model_id, "Hammer");
-
-#ifdef CONFIG_SMP
-	/*
-	 * Disable TLB flush filter by setting HWCR.FFDIS on K8
-	 * bit 6 of msr C001_0015
-	 *
-	 * Errata 63 for SH-B3 steppings
-	 * Errata 122 for all steppings (F+ have it disabled by default)
-	 */
-	msr_set_bit(MSR_K7_HWCR, 6);
-#endif
 }
 
 static void init_amd_gh(struct cpuinfo_x86 *c)
@@ -684,64 +614,6 @@ static void init_amd_ln(struct cpuinfo_x86 *c)
 	msr_set_bit(MSR_AMD64_DE_CFG, 31);
 }
 
-static bool rdrand_force;
-
-static int __init rdrand_cmdline(char *str)
-{
-	if (!str)
-		return -EINVAL;
-
-	if (!strcmp(str, "force"))
-		rdrand_force = true;
-	else
-		return -EINVAL;
-
-	return 0;
-}
-early_param("rdrand", rdrand_cmdline);
-
-static void clear_rdrand_cpuid_bit(struct cpuinfo_x86 *c)
-{
-	/*
-	 * Saving of the MSR used to hide the RDRAND support during
-	 * suspend/resume is done by arch/x86/power/cpu.c, which is
-	 * dependent on CONFIG_PM_SLEEP.
-	 */
-	if (!IS_ENABLED(CONFIG_PM_SLEEP))
-		return;
-
-	/*
-	 * The nordrand option can clear X86_FEATURE_RDRAND, so check for
-	 * RDRAND support using the CPUID function directly.
-	 */
-	if (!(cpuid_ecx(1) & BIT(30)) || rdrand_force)
-		return;
-
-	msr_clear_bit(MSR_AMD64_CPUID_FN_1, 62);
-
-	/*
-	 * Verify that the CPUID change has occurred in case the kernel is
-	 * running virtualized and the hypervisor doesn't support the MSR.
-	 */
-	if (cpuid_ecx(1) & BIT(30)) {
-		pr_info_once("BIOS may not properly restore RDRAND after suspend, but hypervisor does not support hiding RDRAND via CPUID.\n");
-		return;
-	}
-
-	clear_cpu_cap(c, X86_FEATURE_RDRAND);
-	pr_info_once("BIOS may not properly restore RDRAND after suspend, hiding RDRAND via CPUID. Use rdrand=force to reenable.\n");
-}
-
-static void init_amd_jg(struct cpuinfo_x86 *c)
-{
-	/*
-	 * Some BIOS implementations do not restore proper RDRAND support
-	 * across suspend and resume. Check on whether to hide the RDRAND
-	 * instruction support via CPUID.
-	 */
-	clear_rdrand_cpuid_bit(c);
-}
-
 static void init_amd_bd(struct cpuinfo_x86 *c)
 {
 	u64 value;
@@ -769,30 +641,23 @@ static void init_amd_bd(struct cpuinfo_x86 *c)
 			wrmsrl_safe(0xc0011021, value);
 		}
 	}
-
-	/*
-	 * Some BIOS implementations do not restore proper RDRAND support
-	 * across suspend and resume. Check on whether to hide the RDRAND
-	 * instruction support via CPUID.
-	 */
-	clear_rdrand_cpuid_bit(c);
-}
-
-static void init_amd_zn(struct cpuinfo_x86 *c)
-{
-	set_cpu_cap(c, X86_FEATURE_ZEN);
-
-	/*
-	 * Fix erratum 1076: CPB feature bit not being set in CPUID.
-	 * Always set it, except when running under a hypervisor.
-	 */
-	if (!cpu_has(c, X86_FEATURE_HYPERVISOR) && !cpu_has(c, X86_FEATURE_CPB))
-		set_cpu_cap(c, X86_FEATURE_CPB);
 }
 
 static void init_amd(struct cpuinfo_x86 *c)
 {
 	u32 dummy;
+
+#ifdef CONFIG_SMP
+	/*
+	 * Disable TLB flush filter by setting HWCR.FFDIS on K8
+	 * bit 6 of msr C001_0015
+	 *
+	 * Errata 63 for SH-B3 steppings
+	 * Errata 122 for all steppings (F+ have it disabled by default)
+	 */
+	if (c->x86 == 0xf)
+		msr_set_bit(MSR_K7_HWCR, 6);
+#endif
 
 	early_init_amd(c);
 
@@ -820,8 +685,6 @@ static void init_amd(struct cpuinfo_x86 *c)
 	case 0x10: init_amd_gh(c); break;
 	case 0x12: init_amd_ln(c); break;
 	case 0x15: init_amd_bd(c); break;
-	case 0x16: init_amd_jg(c); break;
-	case 0x17: init_amd_zn(c); break;
 	}
 
 	/* Enable workaround for FXSAVE leak */
@@ -846,32 +709,8 @@ static void init_amd(struct cpuinfo_x86 *c)
 		set_cpu_cap(c, X86_FEATURE_K8);
 
 	if (cpu_has_xmm2) {
-		unsigned long long val;
-		int ret;
-
-		/*
-		 * A serializing LFENCE has less overhead than MFENCE, so
-		 * use it for execution serialization.  On families which
-		 * don't have that MSR, LFENCE is already serializing.
-		 * msr_set_bit() uses the safe accessors, too, even if the MSR
-		 * is not present.
-		 */
-		msr_set_bit(MSR_F10H_DECFG,
-			    MSR_F10H_DECFG_LFENCE_SERIALIZE_BIT);
-
-		/*
-		 * Verify that the MSR write was successful (could be running
-		 * under a hypervisor) and only then assume that LFENCE is
-		 * serializing.
-		 */
-		ret = rdmsrl_safe(MSR_F10H_DECFG, &val);
-		if (!ret && (val & MSR_F10H_DECFG_LFENCE_SERIALIZE)) {
-			/* A serializing LFENCE stops RDTSC speculation */
-			set_cpu_cap(c, X86_FEATURE_LFENCE_RDTSC);
-		} else {
-			/* MFENCE stops RDTSC speculation */
-			set_cpu_cap(c, X86_FEATURE_MFENCE_RDTSC);
-		}
+		/* MFENCE stops RDTSC speculation */
+		set_cpu_cap(c, X86_FEATURE_MFENCE_RDTSC);
 	}
 
 	/*
@@ -885,15 +724,6 @@ static void init_amd(struct cpuinfo_x86 *c)
 		set_cpu_bug(c, X86_BUG_AMD_APIC_C1E);
 
 	rdmsr_safe(MSR_AMD64_PATCH_LEVEL, &c->microcode, &dummy);
-
-	/* 3DNow or LM implies PREFETCHW */
-	if (!cpu_has(c, X86_FEATURE_3DNOWPREFETCH))
-		if (cpu_has(c, X86_FEATURE_3DNOW) || cpu_has(c, X86_FEATURE_LM))
-			set_cpu_cap(c, X86_FEATURE_3DNOWPREFETCH);
-
-	/* AMD CPUs don't reset SS attributes on SYSRET, Xen does. */
-	if (!cpu_has(c, X86_FEATURE_XENPV))
-		set_cpu_bug(c, X86_BUG_SYSRET_SS_ATTRS);
 }
 
 #ifdef CONFIG_X86_32
@@ -1051,23 +881,4 @@ static bool cpu_has_amd_erratum(struct cpuinfo_x86 *cpu, const int *erratum)
 			return true;
 
 	return false;
-}
-
-void set_dr_addr_mask(unsigned long mask, int dr)
-{
-	if (!boot_cpu_has(X86_FEATURE_BPEXT))
-		return;
-
-	switch (dr) {
-	case 0:
-		wrmsr(MSR_F16H_DR0_ADDR_MASK, mask, 0);
-		break;
-	case 1:
-	case 2:
-	case 3:
-		wrmsr(MSR_F16H_DR1_ADDR_MASK - 1 + dr, mask, 0);
-		break;
-	default:
-		break;
-	}
 }

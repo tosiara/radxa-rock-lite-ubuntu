@@ -52,8 +52,7 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 	    sock_diag_put_meminfo(sk, skb, NETLINK_DIAG_MEMINFO))
 		goto out_nlmsg_trim;
 
-	nlmsg_end(skb, nlh);
-	return 0;
+	return nlmsg_end(skb, nlh);
 
 out_nlmsg_trim:
 	nlmsg_cancel(skb, nlh);
@@ -65,7 +64,7 @@ static int __netlink_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 {
 	struct netlink_table *tbl = &nl_table[protocol];
 	struct rhashtable *ht = &tbl->hash;
-	const struct bucket_table *htbl = rht_dereference_rcu(ht->tbl, ht);
+	const struct bucket_table *htbl = rht_dereference(ht->tbl, ht);
 	struct net *net = sock_net(skb->sk);
 	struct netlink_diag_req *req;
 	struct netlink_sock *nlsk;
@@ -75,9 +74,7 @@ static int __netlink_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 	req = nlmsg_data(cb->nlh);
 
 	for (i = 0; i < htbl->size; i++) {
-		struct rhash_head *pos;
-
-		rht_for_each_entry_rcu(nlsk, pos, htbl, i, node) {
+		rht_for_each_entry(nlsk, htbl->buckets[i], ht, node) {
 			sk = (struct sock *)nlsk;
 
 			if (!net_eq(sock_net(sk), net))
@@ -134,7 +131,7 @@ static int netlink_diag_dump(struct sk_buff *skb, struct netlink_callback *cb)
 
 	req = nlmsg_data(cb->nlh);
 
-	rcu_read_lock();
+	mutex_lock(&nl_sk_hash_lock);
 	read_lock(&nl_table_lock);
 
 	if (req->sdiag_protocol == NDIAG_PROTO_ALL) {
@@ -148,7 +145,7 @@ static int netlink_diag_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	} else {
 		if (req->sdiag_protocol >= MAX_LINKS) {
 			read_unlock(&nl_table_lock);
-			rcu_read_unlock();
+			mutex_unlock(&nl_sk_hash_lock);
 			return -ENOENT;
 		}
 
@@ -156,7 +153,7 @@ static int netlink_diag_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	}
 
 	read_unlock(&nl_table_lock);
-	rcu_read_unlock();
+	mutex_unlock(&nl_sk_hash_lock);
 
 	return skb->len;
 }

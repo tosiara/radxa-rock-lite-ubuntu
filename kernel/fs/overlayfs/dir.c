@@ -12,7 +12,6 @@
 #include <linux/xattr.h>
 #include <linux/security.h>
 #include <linux/cred.h>
-#include <linux/atomic.h>
 #include "overlayfs.h"
 
 void ovl_cleanup(struct inode *wdir, struct dentry *wdentry)
@@ -20,7 +19,7 @@ void ovl_cleanup(struct inode *wdir, struct dentry *wdentry)
 	int err;
 
 	dget(wdentry);
-	if (d_is_dir(wdentry))
+	if (S_ISDIR(wdentry->d_inode->i_mode))
 		err = ovl_do_rmdir(wdir, wdentry);
 	else
 		err = ovl_do_unlink(wdir, wdentry);
@@ -36,10 +35,8 @@ struct dentry *ovl_lookup_temp(struct dentry *workdir, struct dentry *dentry)
 {
 	struct dentry *temp;
 	char name[20];
-	static atomic_t temp_id = ATOMIC_INIT(0);
 
-	/* counter is allowed to wrap, since temp dentries are ephemeral */
-	snprintf(name, sizeof(name), "#%x", atomic_inc_return(&temp_id));
+	snprintf(name, sizeof(name), "#%lx", (unsigned long) dentry);
 
 	temp = lookup_one_len(name, workdir, strlen(name));
 	if (!IS_ERR(temp) && temp->d_inode) {
@@ -121,14 +118,14 @@ int ovl_create_real(struct inode *dir, struct dentry *newdentry,
 
 static int ovl_set_opaque(struct dentry *upperdentry)
 {
-	return ovl_do_setxattr(upperdentry, OVL_XATTR_OPAQUE, "y", 1, 0);
+	return ovl_do_setxattr(upperdentry, ovl_opaque_xattr, "y", 1, 0);
 }
 
 static void ovl_remove_opaque(struct dentry *upperdentry)
 {
 	int err;
 
-	err = ovl_do_removexattr(upperdentry, OVL_XATTR_OPAQUE);
+	err = ovl_do_removexattr(upperdentry, ovl_opaque_xattr);
 	if (err) {
 		pr_warn("overlayfs: failed to remove opaque from '%s' (%i)\n",
 			upperdentry->d_name.name, err);
@@ -155,7 +152,7 @@ static int ovl_dir_getattr(struct vfsmount *mnt, struct dentry *dentry,
 	 * correct link count.  nlink=1 seems to pacify 'find' and
 	 * other utilities.
 	 */
-	if (OVL_TYPE_MERGE(type))
+	if (type == OVL_PATH_MERGE)
 		stat->nlink = 1;
 
 	return 0;
@@ -224,9 +221,6 @@ static struct dentry *ovl_clear_empty(struct dentry *dentry,
 	struct dentry *opaquedir;
 	struct kstat stat;
 	int err;
-
-	if (WARN_ON(!workdir))
-		return ERR_PTR(-EROFS);
 
 	err = ovl_lock_rename_workdir(workdir, upperdir);
 	if (err)
@@ -328,9 +322,6 @@ static int ovl_create_over_whiteout(struct dentry *dentry, struct inode *inode,
 	struct dentry *newdentry;
 	int err;
 
-	if (WARN_ON(!workdir))
-		return -EROFS;
-
 	err = ovl_lock_rename_workdir(workdir, upperdir);
 	if (err)
 		goto out;
@@ -410,20 +401,26 @@ static int ovl_create_or_link(struct dentry *dentry, int mode, dev_t rdev,
 		const struct cred *old_cred;
 		struct cred *override_cred;
 
-		old_cred = ovl_override_creds(dentry->d_sb);
-
 		err = -ENOMEM;
 		override_cred = prepare_creds();
-		if (override_cred) {
-			override_cred->fsuid = old_cred->fsuid;
-			override_cred->fsgid = old_cred->fsgid;
-			put_cred(override_creds(override_cred));
-			put_cred(override_cred);
+		if (!override_cred)
+			goto out_iput;
 
-			err = ovl_create_over_whiteout(dentry, inode, &stat,
-						       link, hardlink);
-		}
+		/*
+		 * CAP_SYS_ADMIN for setting opaque xattr
+		 * CAP_DAC_OVERRIDE for create in workdir, rename
+		 * CAP_FOWNER for removing whiteout from sticky dir
+		 */
+		cap_raise(override_cred->cap_effective, CAP_SYS_ADMIN);
+		cap_raise(override_cred->cap_effective, CAP_DAC_OVERRIDE);
+		cap_raise(override_cred->cap_effective, CAP_FOWNER);
+		old_cred = override_creds(override_cred);
+
+		err = ovl_create_over_whiteout(dentry, inode, &stat, link,
+					       hardlink);
+
 		revert_creds(old_cred);
+		put_cred(override_cred);
 	}
 
 	if (!err)
@@ -510,28 +507,11 @@ static int ovl_remove_and_whiteout(struct dentry *dentry, bool is_dir)
 	int err;
 	int flags = 0;
 
-	if (WARN_ON(!workdir))
-		return -EROFS;
-
 	if (is_dir) {
-		if (OVL_TYPE_MERGE_OR_LOWER(ovl_path_type(dentry))) {
-			opaquedir = ovl_check_empty_and_clear(dentry);
-			err = PTR_ERR(opaquedir);
-			if (IS_ERR(opaquedir))
-				goto out;
-		} else {
-			LIST_HEAD(list);
-
-			/*
-			 * When removing an empty opaque directory, then it
-			 * makes no sense to replace it with an exact replica of
-			 * itself.  But emptiness still needs to be checked.
-			 */
-			err = ovl_check_empty_dir(dentry, &list);
-			ovl_cache_free(&list);
-			if (err)
-				goto out;
-		}
+		opaquedir = ovl_check_empty_and_clear(dentry);
+		err = PTR_ERR(opaquedir);
+		if (IS_ERR(opaquedir))
+			goto out;
 	}
 
 	err = ovl_lock_rename_workdir(workdir, upperdir);
@@ -587,25 +567,21 @@ static int ovl_remove_upper(struct dentry *dentry, bool is_dir)
 {
 	struct dentry *upperdir = ovl_dentry_upper(dentry->d_parent);
 	struct inode *dir = upperdir->d_inode;
-	struct dentry *upper;
+	struct dentry *upper = ovl_dentry_upper(dentry);
 	int err;
 
 	mutex_lock_nested(&dir->i_mutex, I_MUTEX_PARENT);
-	upper = lookup_one_len(dentry->d_name.name, upperdir,
-			       dentry->d_name.len);
-	err = PTR_ERR(upper);
-	if (IS_ERR(upper))
-		goto out_unlock;
-
 	err = -ESTALE;
-	if (upper == ovl_dentry_upper(dentry)) {
+	if (upper->d_parent == upperdir) {
+		/* Don't let d_delete() think it can reset d_inode */
+		dget(upper);
 		if (is_dir)
 			err = vfs_rmdir(dir, upper);
 		else
 			err = vfs_unlink(dir, upper, NULL);
+		dput(upper);
 		ovl_dentry_version_inc(dentry->d_parent);
 	}
-	dput(upper);
 
 	/*
 	 * Keeping this dentry hashed would mean having to release
@@ -615,7 +591,6 @@ static int ovl_remove_upper(struct dentry *dentry, bool is_dir)
 	 */
 	if (!err)
 		d_drop(dentry);
-out_unlock:
 	mutex_unlock(&dir->i_mutex);
 
 	return err;
@@ -650,14 +625,35 @@ static int ovl_do_remove(struct dentry *dentry, bool is_dir)
 		goto out_drop_write;
 
 	type = ovl_path_type(dentry);
-	if (OVL_TYPE_PURE_UPPER(type)) {
+	if (type == OVL_PATH_PURE_UPPER) {
 		err = ovl_remove_upper(dentry, is_dir);
 	} else {
-		const struct cred *old_cred = ovl_override_creds(dentry->d_sb);
+		const struct cred *old_cred;
+		struct cred *override_cred;
+
+		err = -ENOMEM;
+		override_cred = prepare_creds();
+		if (!override_cred)
+			goto out_drop_write;
+
+		/*
+		 * CAP_SYS_ADMIN for setting xattr on whiteout, opaque dir
+		 * CAP_DAC_OVERRIDE for create in workdir, rename
+		 * CAP_FOWNER for removing whiteout from sticky dir
+		 * CAP_FSETID for chmod of opaque dir
+		 * CAP_CHOWN for chown of opaque dir
+		 */
+		cap_raise(override_cred->cap_effective, CAP_SYS_ADMIN);
+		cap_raise(override_cred->cap_effective, CAP_DAC_OVERRIDE);
+		cap_raise(override_cred->cap_effective, CAP_FOWNER);
+		cap_raise(override_cred->cap_effective, CAP_FSETID);
+		cap_raise(override_cred->cap_effective, CAP_CHOWN);
+		old_cred = override_creds(override_cred);
 
 		err = ovl_remove_and_whiteout(dentry, is_dir);
 
 		revert_creds(old_cred);
+		put_cred(override_cred);
 	}
 out_drop_write:
 	ovl_drop_write(dentry);
@@ -692,10 +688,11 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 	bool new_create = false;
 	bool cleanup_whiteout = false;
 	bool overwrite = !(flags & RENAME_EXCHANGE);
-	bool is_dir = d_is_dir(old);
+	bool is_dir = S_ISDIR(old->d_inode->i_mode);
 	bool new_is_dir = false;
 	struct dentry *opaquedir = NULL;
 	const struct cred *old_cred = NULL;
+	struct cred *override_cred = NULL;
 
 	err = -EINVAL;
 	if (flags & ~(RENAME_EXCHANGE | RENAME_NOREPLACE))
@@ -710,7 +707,7 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 	/* Don't copy up directory trees */
 	old_type = ovl_path_type(old);
 	err = -EXDEV;
-	if (OVL_TYPE_MERGE_OR_LOWER(old_type) && is_dir)
+	if ((old_type == OVL_PATH_LOWER || old_type == OVL_PATH_MERGE) && is_dir)
 		goto out;
 
 	if (new->d_inode) {
@@ -718,30 +715,30 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 		if (err)
 			goto out;
 
-		if (d_is_dir(new))
+		if (S_ISDIR(new->d_inode->i_mode))
 			new_is_dir = true;
 
 		new_type = ovl_path_type(new);
 		err = -EXDEV;
-		if (!overwrite && OVL_TYPE_MERGE_OR_LOWER(new_type) && new_is_dir)
+		if (!overwrite && (new_type == OVL_PATH_LOWER || new_type == OVL_PATH_MERGE) && new_is_dir)
 			goto out;
 
 		err = 0;
-		if (!OVL_TYPE_UPPER(new_type) && !OVL_TYPE_UPPER(old_type)) {
+		if (new_type == OVL_PATH_LOWER && old_type == OVL_PATH_LOWER) {
 			if (ovl_dentry_lower(old)->d_inode ==
 			    ovl_dentry_lower(new)->d_inode)
 				goto out;
 		}
-		if (OVL_TYPE_UPPER(new_type) && OVL_TYPE_UPPER(old_type)) {
+		if (new_type != OVL_PATH_LOWER && old_type != OVL_PATH_LOWER) {
 			if (ovl_dentry_upper(old)->d_inode ==
 			    ovl_dentry_upper(new)->d_inode)
 				goto out;
 		}
 	} else {
 		if (ovl_dentry_is_opaque(new))
-			new_type = __OVL_PATH_UPPER;
+			new_type = OVL_PATH_UPPER;
 		else
-			new_type = __OVL_PATH_UPPER | __OVL_PATH_PURE;
+			new_type = OVL_PATH_PURE_UPPER;
 	}
 
 	err = ovl_want_write(old);
@@ -761,13 +758,31 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 			goto out_drop_write;
 	}
 
-	old_opaque = !OVL_TYPE_PURE_UPPER(old_type);
-	new_opaque = !OVL_TYPE_PURE_UPPER(new_type);
+	old_opaque = old_type != OVL_PATH_PURE_UPPER;
+	new_opaque = new_type != OVL_PATH_PURE_UPPER;
 
-	if (old_opaque || new_opaque)
-		old_cred = ovl_override_creds(old->d_sb);
+	if (old_opaque || new_opaque) {
+		err = -ENOMEM;
+		override_cred = prepare_creds();
+		if (!override_cred)
+			goto out_drop_write;
 
-	if (overwrite && OVL_TYPE_MERGE_OR_LOWER(new_type) && new_is_dir) {
+		/*
+		 * CAP_SYS_ADMIN for setting xattr on whiteout, opaque dir
+		 * CAP_DAC_OVERRIDE for create in workdir
+		 * CAP_FOWNER for removing whiteout from sticky dir
+		 * CAP_FSETID for chmod of opaque dir
+		 * CAP_CHOWN for chown of opaque dir
+		 */
+		cap_raise(override_cred->cap_effective, CAP_SYS_ADMIN);
+		cap_raise(override_cred->cap_effective, CAP_DAC_OVERRIDE);
+		cap_raise(override_cred->cap_effective, CAP_FOWNER);
+		cap_raise(override_cred->cap_effective, CAP_FSETID);
+		cap_raise(override_cred->cap_effective, CAP_CHOWN);
+		old_cred = override_creds(override_cred);
+	}
+
+	if (overwrite && (new_type == OVL_PATH_LOWER || new_type == OVL_PATH_MERGE) && new_is_dir) {
 		opaquedir = ovl_check_empty_and_clear(new);
 		err = PTR_ERR(opaquedir);
 		if (IS_ERR(opaquedir)) {
@@ -796,39 +811,29 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 
 	trap = lock_rename(new_upperdir, old_upperdir);
 
-
-	olddentry = lookup_one_len(old->d_name.name, old_upperdir,
-				   old->d_name.len);
-	err = PTR_ERR(olddentry);
-	if (IS_ERR(olddentry))
-		goto out_unlock;
-
-	err = -ESTALE;
-	if (olddentry != ovl_dentry_upper(old))
-		goto out_dput_old;
-
-	newdentry = lookup_one_len(new->d_name.name, new_upperdir,
-				   new->d_name.len);
-	err = PTR_ERR(newdentry);
-	if (IS_ERR(newdentry))
-		goto out_dput_old;
-
-	err = -ESTALE;
-	if (ovl_dentry_upper(new)) {
+	olddentry = ovl_dentry_upper(old);
+	newdentry = ovl_dentry_upper(new);
+	if (newdentry) {
 		if (opaquedir) {
-			if (newdentry != opaquedir)
-				goto out_dput;
+			newdentry = opaquedir;
+			opaquedir = NULL;
 		} else {
-			if (newdentry != ovl_dentry_upper(new))
-				goto out_dput;
+			dget(newdentry);
 		}
 	} else {
 		new_create = true;
-		if (!d_is_negative(newdentry) &&
-		    (!new_opaque || !ovl_is_whiteout(newdentry)))
-			goto out_dput;
+		newdentry = lookup_one_len(new->d_name.name, new_upperdir,
+					   new->d_name.len);
+		err = PTR_ERR(newdentry);
+		if (IS_ERR(newdentry))
+			goto out_unlock;
 	}
 
+	err = -ESTALE;
+	if (olddentry->d_parent != old_upperdir)
+		goto out_dput;
+	if (newdentry->d_parent != new_upperdir)
+		goto out_dput;
 	if (olddentry == trap)
 		goto out_dput;
 	if (newdentry == trap)
@@ -870,13 +875,6 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 	if (!overwrite && new_is_dir && !old_opaque && new_opaque)
 		ovl_remove_opaque(newdentry);
 
-	/*
-	 * Old dentry now lives in different location. Dentries in
-	 * lowerstack are stale. We cannot drop them here because
-	 * access to them is lockless. This could be only pure upper
-	 * or opaque directory - numlower is zero. Or upper non-dir
-	 * entry - its pureness is tracked by flag opaque.
-	 */
 	if (old_opaque != new_opaque) {
 		ovl_dentry_set_opaque(old, new_opaque);
 		if (!overwrite)
@@ -891,13 +889,13 @@ static int ovl_rename2(struct inode *olddir, struct dentry *old,
 
 out_dput:
 	dput(newdentry);
-out_dput_old:
-	dput(olddentry);
 out_unlock:
 	unlock_rename(new_upperdir, old_upperdir);
 out_revert_creds:
-	if (old_opaque || new_opaque)
+	if (old_opaque || new_opaque) {
 		revert_creds(old_cred);
+		put_cred(override_cred);
+	}
 out_drop_write:
 	ovl_drop_write(old);
 out:

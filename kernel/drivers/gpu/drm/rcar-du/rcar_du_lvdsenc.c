@@ -28,7 +28,7 @@ struct rcar_du_lvdsenc {
 	unsigned int index;
 	void __iomem *mmio;
 	struct clk *clock;
-	bool enabled;
+	int dpms;
 
 	enum rcar_lvds_input input;
 };
@@ -48,7 +48,7 @@ static int rcar_du_lvdsenc_start(struct rcar_du_lvdsenc *lvds,
 	u32 pllcr;
 	int ret;
 
-	if (lvds->enabled)
+	if (lvds->dpms == DRM_MODE_DPMS_ON)
 		return 0;
 
 	ret = clk_prepare_enable(lvds->clock);
@@ -56,11 +56,11 @@ static int rcar_du_lvdsenc_start(struct rcar_du_lvdsenc *lvds,
 		return ret;
 
 	/* PLL clock configuration */
-	if (freq < 39000)
+	if (freq <= 38000)
 		pllcr = LVDPLLCR_CEEN | LVDPLLCR_COSEL | LVDPLLCR_PLLDLYCNT_38M;
-	else if (freq < 61000)
+	else if (freq <= 60000)
 		pllcr = LVDPLLCR_CEEN | LVDPLLCR_COSEL | LVDPLLCR_PLLDLYCNT_60M;
-	else if (freq < 121000)
+	else if (freq <= 121000)
 		pllcr = LVDPLLCR_CEEN | LVDPLLCR_COSEL | LVDPLLCR_PLLDLYCNT_121M;
 	else
 		pllcr = LVDPLLCR_PLLDLYCNT_150M;
@@ -102,7 +102,7 @@ static int rcar_du_lvdsenc_start(struct rcar_du_lvdsenc *lvds,
 	/* Turn the PLL on, wait for the startup delay, and turn the output
 	 * on.
 	 */
-	lvdcr0 |= LVDCR0_PLLON;
+	lvdcr0 |= LVDCR0_PLLEN;
 	rcar_lvds_write(lvds, LVDCR0, lvdcr0);
 
 	usleep_range(100, 150);
@@ -110,13 +110,13 @@ static int rcar_du_lvdsenc_start(struct rcar_du_lvdsenc *lvds,
 	lvdcr0 |= LVDCR0_LVRES;
 	rcar_lvds_write(lvds, LVDCR0, lvdcr0);
 
-	lvds->enabled = true;
+	lvds->dpms = DRM_MODE_DPMS_ON;
 	return 0;
 }
 
 static void rcar_du_lvdsenc_stop(struct rcar_du_lvdsenc *lvds)
 {
-	if (!lvds->enabled)
+	if (lvds->dpms == DRM_MODE_DPMS_OFF)
 		return;
 
 	rcar_lvds_write(lvds, LVDCR0, 0);
@@ -124,13 +124,13 @@ static void rcar_du_lvdsenc_stop(struct rcar_du_lvdsenc *lvds)
 
 	clk_disable_unprepare(lvds->clock);
 
-	lvds->enabled = false;
+	lvds->dpms = DRM_MODE_DPMS_OFF;
 }
 
-int rcar_du_lvdsenc_enable(struct rcar_du_lvdsenc *lvds, struct drm_crtc *crtc,
-			   bool enable)
+int rcar_du_lvdsenc_dpms(struct rcar_du_lvdsenc *lvds,
+			 struct drm_crtc *crtc, int mode)
 {
-	if (!enable) {
+	if (mode == DRM_MODE_DPMS_OFF) {
 		rcar_du_lvdsenc_stop(lvds);
 		return 0;
 	} else if (crtc) {
@@ -179,7 +179,7 @@ int rcar_du_lvdsenc_init(struct rcar_du_device *rcdu)
 		lvds->dev = rcdu;
 		lvds->index = i;
 		lvds->input = i ? RCAR_LVDS_INPUT_DU1 : RCAR_LVDS_INPUT_DU0;
-		lvds->enabled = false;
+		lvds->dpms = DRM_MODE_DPMS_OFF;
 
 		ret = rcar_du_lvdsenc_get_resources(lvds, pdev);
 		if (ret < 0)

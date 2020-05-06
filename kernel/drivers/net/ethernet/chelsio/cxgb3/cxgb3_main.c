@@ -50,7 +50,6 @@
 #include <linux/stringify.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/nospec.h>
 #include <asm/uaccess.h>
 
 #include "common.h"
@@ -1026,19 +1025,19 @@ int t3_get_edc_fw(struct cphy *phy, int edc_idx, int size)
 {
 	struct adapter *adapter = phy->adapter;
 	const struct firmware *fw;
-	const char *fw_name;
+	char buf[64];
 	u32 csum;
 	const __be32 *p;
 	u16 *cache = phy->phy_cache;
-	int i, ret = -EINVAL;
+	int i, ret;
 
-	fw_name = get_edc_fw_name(edc_idx);
-	if (fw_name)
-		ret = request_firmware(&fw, fw_name, &adapter->pdev->dev);
+	snprintf(buf, sizeof(buf), get_edc_fw_name(edc_idx));
+
+	ret = request_firmware(&fw, buf, &adapter->pdev->dev);
 	if (ret < 0) {
 		dev_err(&adapter->pdev->dev,
 			"could not upgrade firmware: unable to load %s\n",
-			fw_name);
+			buf);
 		return ret;
 	}
 
@@ -1538,7 +1537,7 @@ static void set_msglevel(struct net_device *dev, u32 val)
 	adapter->msg_enable = val;
 }
 
-static const char stats_strings[][ETH_GSTRING_LEN] = {
+static char stats_strings[][ETH_GSTRING_LEN] = {
 	"TxOctetsOK         ",
 	"TxFramesOK         ",
 	"TxMulticastFramesOK",
@@ -2262,7 +2261,6 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
 
 		if (t.qset_idx >= nqsets)
 			return -EINVAL;
-		t.qset_idx = array_index_nospec(t.qset_idx, nqsets);
 
 		q = &adapter->params.sge.qset[q1 + t.qset_idx];
 		t.rspq_size = q->rspq_size;
@@ -2437,8 +2435,6 @@ static int cxgb_extension_ioctl(struct net_device *dev, void __user *useraddr)
 
 		if (!is_offload(adapter))
 			return -EOPNOTSUPP;
-		if (!capable(CAP_NET_ADMIN))
-			return -EPERM;
 		if (!(adapter->flags & FULL_INIT_DONE))
 			return -EIO;	/* need the memory controllers */
 		if (copy_from_user(&t, useraddr, sizeof(t)))
@@ -3262,7 +3258,7 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (!adapter->regs) {
 		dev_err(&pdev->dev, "cannot map device registers\n");
 		err = -ENOMEM;
-		goto out_free_adapter_nofail;
+		goto out_free_adapter;
 	}
 
 	adapter->pdev = pdev;
@@ -3379,9 +3375,6 @@ out_free_dev:
 	for (i = ai->nports0 + ai->nports1 - 1; i >= 0; --i)
 		if (adapter->port[i])
 			free_netdev(adapter->port[i]);
-
-out_free_adapter_nofail:
-	kfree_skb(adapter->nofail_skb);
 
 out_free_adapter:
 	kfree(adapter);

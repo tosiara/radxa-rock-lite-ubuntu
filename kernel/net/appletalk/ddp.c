@@ -1029,13 +1029,8 @@ static int atalk_create(struct net *net, struct socket *sock, int protocol,
 	 */
 	if (sock->type != SOCK_RAW && sock->type != SOCK_DGRAM)
 		goto out;
-
-	rc = -EPERM;
-	if (sock->type == SOCK_RAW && !kern && !capable(CAP_NET_RAW))
-		goto out;
-
 	rc = -ENOMEM;
-	sk = sk_alloc(net, PF_APPLETALK, GFP_KERNEL, &ddp_proto, kern);
+	sk = sk_alloc(net, PF_APPLETALK, GFP_KERNEL, &ddp_proto);
 	if (!sk)
 		goto out;
 	rc = 0;
@@ -1564,7 +1559,8 @@ freeit:
 	return 0;
 }
 
-static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
+static int atalk_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
+			 size_t len)
 {
 	struct sock *sk = sock->sk;
 	struct atalk_sock *at = at_sk(sk);
@@ -1663,7 +1659,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 
 	SOCK_DEBUG(sk, "SK %p: Copy user data (%Zd bytes).\n", sk, len);
 
-	err = memcpy_from_msg(skb_put(skb, len), msg, len);
+	err = memcpy_fromiovec(skb_put(skb, len), msg->msg_iov, len);
 	if (err) {
 		kfree_skb(skb);
 		err = -EFAULT;
@@ -1732,8 +1728,8 @@ out:
 	return err ? : len;
 }
 
-static int atalk_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
-			 int flags)
+static int atalk_recvmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
+			 size_t size, int flags)
 {
 	struct sock *sk = sock->sk;
 	struct ddpehdr *ddp;
@@ -1762,7 +1758,7 @@ static int atalk_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		copied = size;
 		msg->msg_flags |= MSG_TRUNC;
 	}
-	err = skb_copy_datagram_msg(skb, offset, msg, copied);
+	err = skb_copy_datagram_iovec(skb, offset, msg->msg_iov, copied);
 
 	if (!err && msg->msg_name) {
 		DECLARE_SOCKADDR(struct sockaddr_at *, sat, msg->msg_name);
@@ -1911,6 +1907,9 @@ static unsigned char ddp_snap_id[] = { 0x08, 0x00, 0x07, 0x80, 0x9B };
 EXPORT_SYMBOL(atrtr_get_dev);
 EXPORT_SYMBOL(atalk_find_dev_addr);
 
+static const char atalk_err_snap[] __initconst =
+	KERN_CRIT "Unable to register DDP with SNAP.\n";
+
 /* Called by proto.c on kernel start up */
 static int __init atalk_init(void)
 {
@@ -1925,23 +1924,17 @@ static int __init atalk_init(void)
 		goto out_proto;
 
 	ddp_dl = register_snap_client(ddp_snap_id, atalk_rcv);
-	if (!ddp_dl) {
-		pr_crit("Unable to register DDP with SNAP.\n");
-		rc = -ENOMEM;
-		goto out_sock;
-	}
+	if (!ddp_dl)
+		printk(atalk_err_snap);
 
 	dev_add_pack(&ltalk_packet_type);
 	dev_add_pack(&ppptalk_packet_type);
 
 	rc = register_netdevice_notifier(&ddp_notifier);
 	if (rc)
-		goto out_snap;
+		goto out_sock;
 
-	rc = aarp_proto_init();
-	if (rc)
-		goto out_dev;
-
+	aarp_proto_init();
 	rc = atalk_proc_init();
 	if (rc)
 		goto out_aarp;
@@ -1955,13 +1948,11 @@ out_proc:
 	atalk_proc_exit();
 out_aarp:
 	aarp_cleanup_module();
-out_dev:
 	unregister_netdevice_notifier(&ddp_notifier);
-out_snap:
+out_sock:
 	dev_remove_pack(&ppptalk_packet_type);
 	dev_remove_pack(&ltalk_packet_type);
 	unregister_snap_client(ddp_dl);
-out_sock:
 	sock_unregister(PF_APPLETALK);
 out_proto:
 	proto_unregister(&ddp_proto);

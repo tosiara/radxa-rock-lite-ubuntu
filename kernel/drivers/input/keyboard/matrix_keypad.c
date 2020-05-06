@@ -405,7 +405,7 @@ matrix_keypad_parse_dt(struct device *dev)
 	struct matrix_keypad_platform_data *pdata;
 	struct device_node *np = dev->of_node;
 	unsigned int *gpios;
-	int ret, i, nrow, ncol;
+	int i, nrow, ncol;
 
 	if (!np) {
 		dev_err(dev, "device lacks DT data\n");
@@ -427,10 +427,8 @@ matrix_keypad_parse_dt(struct device *dev)
 
 	if (of_get_property(np, "linux,no-autorepeat", NULL))
 		pdata->no_autorepeat = true;
-
-	pdata->wakeup = of_property_read_bool(np, "wakeup-source") ||
-			of_property_read_bool(np, "linux,wakeup"); /* legacy */
-
+	if (of_get_property(np, "linux,wakeup", NULL))
+		pdata->wakeup = true;
 	if (of_get_property(np, "gpio-activelow", NULL))
 		pdata->active_low = true;
 
@@ -447,19 +445,12 @@ matrix_keypad_parse_dt(struct device *dev)
 		return ERR_PTR(-ENOMEM);
 	}
 
-	for (i = 0; i < nrow; i++) {
-		ret = of_get_named_gpio(np, "row-gpios", i);
-		if (ret < 0)
-			return ERR_PTR(ret);
-		gpios[i] = ret;
-	}
+	for (i = 0; i < pdata->num_row_gpios; i++)
+		gpios[i] = of_get_named_gpio(np, "row-gpios", i);
 
-	for (i = 0; i < ncol; i++) {
-		ret = of_get_named_gpio(np, "col-gpios", i);
-		if (ret < 0)
-			return ERR_PTR(ret);
-		gpios[nrow + i] = ret;
-	}
+	for (i = 0; i < pdata->num_col_gpios; i++)
+		gpios[pdata->num_row_gpios + i] =
+			of_get_named_gpio(np, "col-gpios", i);
 
 	pdata->row_gpios = gpios;
 	pdata->col_gpios = &gpios[pdata->num_row_gpios];
@@ -486,8 +477,10 @@ static int matrix_keypad_probe(struct platform_device *pdev)
 	pdata = dev_get_platdata(&pdev->dev);
 	if (!pdata) {
 		pdata = matrix_keypad_parse_dt(&pdev->dev);
-		if (IS_ERR(pdata))
+		if (IS_ERR(pdata)) {
+			dev_err(&pdev->dev, "no platform data defined\n");
 			return PTR_ERR(pdata);
+		}
 	} else if (!pdata->keymap_data) {
 		dev_err(&pdev->dev, "no keymap data defined\n");
 		return -EINVAL;
@@ -574,6 +567,7 @@ static struct platform_driver matrix_keypad_driver = {
 	.remove		= matrix_keypad_remove,
 	.driver		= {
 		.name	= "matrix-keypad",
+		.owner	= THIS_MODULE,
 		.pm	= &matrix_keypad_pm_ops,
 		.of_match_table = of_match_ptr(matrix_keypad_dt_match),
 	},

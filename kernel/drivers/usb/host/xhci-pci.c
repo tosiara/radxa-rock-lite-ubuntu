@@ -51,20 +51,10 @@
 #define PCI_DEVICE_ID_INTEL_SUNRISEPOINT_LP_XHCI	0x9d2f
 #define PCI_DEVICE_ID_INTEL_BROXTON_M_XHCI		0x0aa8
 #define PCI_DEVICE_ID_INTEL_BROXTON_B_XHCI		0x1aa8
-#define PCI_DEVICE_ID_INTEL_APL_XHCI			0x5aa8
-#define PCI_DEVICE_ID_INTEL_DNV_XHCI			0x19d0
-#define PCI_DEVICE_ID_INTEL_CML_XHCI			0xa3af
 
 static const char hcd_name[] = "xhci_hcd";
 
 static struct hc_driver __read_mostly xhci_pci_hc_driver;
-
-static int xhci_pci_setup(struct usb_hcd *hcd);
-
-static const struct xhci_driver_overrides xhci_pci_overrides __initconst = {
-	.extra_priv_size = sizeof(struct xhci_hcd),
-	.reset = xhci_pci_setup,
-};
 
 /* called after powerup, by probe or system-pm "wakeup" */
 static int xhci_pci_reinit(struct xhci_hcd *xhci, struct pci_dev *pdev)
@@ -168,20 +158,13 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 		 pdev->device == PCI_DEVICE_ID_INTEL_SUNRISEPOINT_H_XHCI ||
 		 pdev->device == PCI_DEVICE_ID_INTEL_CHERRYVIEW_XHCI ||
 		 pdev->device == PCI_DEVICE_ID_INTEL_BROXTON_M_XHCI ||
-		 pdev->device == PCI_DEVICE_ID_INTEL_BROXTON_B_XHCI ||
-		 pdev->device == PCI_DEVICE_ID_INTEL_APL_XHCI ||
-		 pdev->device == PCI_DEVICE_ID_INTEL_DNV_XHCI ||
-		 pdev->device == PCI_DEVICE_ID_INTEL_CML_XHCI)) {
+		 pdev->device == PCI_DEVICE_ID_INTEL_BROXTON_B_XHCI)) {
 		xhci->quirks |= XHCI_PME_STUCK_QUIRK;
 	}
 	if (pdev->vendor == PCI_VENDOR_ID_INTEL &&
-	    (pdev->device == PCI_DEVICE_ID_INTEL_CHERRYVIEW_XHCI ||
-	     pdev->device == PCI_DEVICE_ID_INTEL_SUNRISEPOINT_LP_XHCI ||
-	     pdev->device == PCI_DEVICE_ID_INTEL_SUNRISEPOINT_H_XHCI ||
-	     pdev->device == PCI_DEVICE_ID_INTEL_APL_XHCI ||
-	     pdev->device == PCI_DEVICE_ID_INTEL_DNV_XHCI))
-		xhci->quirks |= XHCI_MISSING_CAS;
-
+		 pdev->device == PCI_DEVICE_ID_INTEL_CHERRYVIEW_XHCI) {
+		xhci->quirks |= XHCI_SSIC_PORT_UNUSED;
+	}
 	if (pdev->vendor == PCI_VENDOR_ID_ETRON &&
 			pdev->device == PCI_DEVICE_ID_EJ168) {
 		xhci->quirks |= XHCI_RESET_ON_RESUME;
@@ -221,14 +204,10 @@ static void xhci_pme_acpi_rtd3_enable(struct pci_dev *dev)
 		0xb7, 0x0c, 0x34, 0xac,	0x01, 0xe9, 0xbf, 0x45,
 		0xb7, 0xe6, 0x2b, 0x34, 0xec, 0x93, 0x1e, 0x23,
 	};
-	union acpi_object *obj;
-
-	obj = acpi_evaluate_dsm(ACPI_HANDLE(&dev->dev), intel_dsm_uuid, 3, 1,
-				NULL);
-	ACPI_FREE(obj);
+	acpi_evaluate_dsm(ACPI_HANDLE(&dev->dev), intel_dsm_uuid, 3, 1, NULL);
 }
 #else
-static void xhci_pme_acpi_rtd3_enable(struct pci_dev *dev) { }
+	static void xhci_pme_acpi_rtd3_enable(struct pci_dev *dev) { }
 #endif /* CONFIG_ACPI */
 
 /* called during probe() after chip reset completes */
@@ -238,17 +217,15 @@ static int xhci_pci_setup(struct usb_hcd *hcd)
 	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
 	int			retval;
 
-	xhci = hcd_to_xhci(hcd);
-	if (!xhci->sbrn)
-		pci_read_config_byte(pdev, XHCI_SBRN_OFFSET, &xhci->sbrn);
-
 	retval = xhci_gen_setup(hcd, xhci_pci_quirks);
 	if (retval)
 		return retval;
 
+	xhci = hcd_to_xhci(hcd);
 	if (!usb_hcd_is_primary_hcd(hcd))
 		return 0;
 
+	pci_read_config_byte(pdev, XHCI_SBRN_OFFSET, &xhci->sbrn);
 	xhci_dbg(xhci, "Got SBRN %u\n", (unsigned int) xhci->sbrn);
 
 	/* Find any debug ports */
@@ -256,6 +233,7 @@ static int xhci_pci_setup(struct usb_hcd *hcd)
 	if (!retval)
 		return retval;
 
+	kfree(xhci);
 	return retval;
 }
 
@@ -296,6 +274,11 @@ static int xhci_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		goto dealloc_usb2_hcd;
 	}
 
+	/* Set the xHCI pointer before xhci_pci_setup() (aka hcd_driver.reset)
+	 * is called by usb_add_hcd().
+	 */
+	*((struct xhci_hcd **) xhci->shared_hcd->hcd_priv) = xhci;
+
 	retval = usb_add_hcd(xhci->shared_hcd, dev->irq,
 			IRQF_SHARED);
 	if (retval)
@@ -333,12 +316,13 @@ static void xhci_pci_remove(struct pci_dev *dev)
 		usb_remove_hcd(xhci->shared_hcd);
 		usb_put_hcd(xhci->shared_hcd);
 	}
+	usb_hcd_pci_remove(dev);
 
 	/* Workaround for spurious wakeups at shutdown with HSW */
 	if (xhci->quirks & XHCI_SPURIOUS_WAKEUP)
 		pci_set_power_state(dev, PCI_D3hot);
 
-	usb_hcd_pci_remove(dev);
+	kfree(xhci);
 }
 
 #ifdef CONFIG_PM
@@ -348,46 +332,47 @@ static void xhci_pci_remove(struct pci_dev *dev)
  * SSIC PORT need to be marked as "unused" before putting xHCI
  * into D3. After D3 exit, the SSIC port need to be marked as "used".
  * Without this change, xHCI might not enter D3 state.
- * Make sure PME works on some Intel xHCI controllers by writing 1 to clear
- * the Internal PME flag bit in vendor specific PMCTRL register at offset 0x80a4
  */
-static void xhci_pme_quirk(struct usb_hcd *hcd, bool suspend)
+static void xhci_ssic_port_unused_quirk(struct usb_hcd *hcd, bool suspend)
 {
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
 	u32 val;
 	void __iomem *reg;
 	int i;
 
-	if (pdev->vendor == PCI_VENDOR_ID_INTEL &&
-		 pdev->device == PCI_DEVICE_ID_INTEL_CHERRYVIEW_XHCI) {
+	for (i = 0; i < SSIC_PORT_NUM; i++) {
+		reg = (void __iomem *) xhci->cap_regs +
+				SSIC_PORT_CFG2 +
+				i * SSIC_PORT_CFG2_OFFSET;
 
-		for (i = 0; i < SSIC_PORT_NUM; i++) {
-			reg = (void __iomem *) xhci->cap_regs +
-					SSIC_PORT_CFG2 +
-					i * SSIC_PORT_CFG2_OFFSET;
+		/* Notify SSIC that SSIC profile programming is not done. */
+		val = readl(reg) & ~PROG_DONE;
+		writel(val, reg);
 
-			/*
-			 * Notify SSIC that SSIC profile programming
-			 * is not done.
-			 */
-			val = readl(reg) & ~PROG_DONE;
-			writel(val, reg);
+		/* Mark SSIC port as unused(suspend) or used(resume) */
+		val = readl(reg);
+		if (suspend)
+			val |= SSIC_PORT_UNUSED;
+		else
+			val &= ~SSIC_PORT_UNUSED;
+		writel(val, reg);
 
-			/* Mark SSIC port as unused(suspend) or used(resume) */
-			val = readl(reg);
-			if (suspend)
-				val |= SSIC_PORT_UNUSED;
-			else
-				val &= ~SSIC_PORT_UNUSED;
-			writel(val, reg);
-
-			/* Notify SSIC that SSIC profile programming is done */
-			val = readl(reg) | PROG_DONE;
-			writel(val, reg);
-			readl(reg);
-		}
+		/* Notify SSIC that SSIC profile programming is done */
+		val = readl(reg) | PROG_DONE;
+		writel(val, reg);
+		readl(reg);
 	}
+}
+
+/*
+ * Make sure PME works on some Intel xHCI controllers by writing 1 to clear
+ * the Internal PME flag bit in vendor specific PMCTRL register at offset 0x80a4
+ */
+static void xhci_pme_quirk(struct usb_hcd *hcd)
+{
+	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
+	void __iomem *reg;
+	u32 val;
 
 	reg = (void __iomem *) xhci->cap_regs + 0x80a4;
 	val = readl(reg);
@@ -399,6 +384,7 @@ static int xhci_pci_suspend(struct usb_hcd *hcd, bool do_wakeup)
 {
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
+	int			ret;
 
 	/*
 	 * Systems with the TI redriver that loses port status change events
@@ -408,9 +394,16 @@ static int xhci_pci_suspend(struct usb_hcd *hcd, bool do_wakeup)
 		pdev->no_d3cold = true;
 
 	if (xhci->quirks & XHCI_PME_STUCK_QUIRK)
-		xhci_pme_quirk(hcd, true);
+		xhci_pme_quirk(hcd);
 
-	return xhci_suspend(xhci, do_wakeup);
+	if (xhci->quirks & XHCI_SSIC_PORT_UNUSED)
+		xhci_ssic_port_unused_quirk(hcd, true);
+
+	ret = xhci_suspend(xhci, do_wakeup);
+	if (ret && (xhci->quirks & XHCI_SSIC_PORT_UNUSED))
+		xhci_ssic_port_unused_quirk(hcd, false);
+
+	return ret;
 }
 
 static int xhci_pci_resume(struct usb_hcd *hcd, bool hibernated)
@@ -440,23 +433,14 @@ static int xhci_pci_resume(struct usb_hcd *hcd, bool hibernated)
 	if (pdev->vendor == PCI_VENDOR_ID_INTEL)
 		usb_enable_intel_xhci_ports(pdev);
 
+	if (xhci->quirks & XHCI_SSIC_PORT_UNUSED)
+		xhci_ssic_port_unused_quirk(hcd, false);
+
 	if (xhci->quirks & XHCI_PME_STUCK_QUIRK)
-		xhci_pme_quirk(hcd, false);
+		xhci_pme_quirk(hcd);
 
 	retval = xhci_resume(xhci, hibernated);
 	return retval;
-}
-
-static void xhci_pci_shutdown(struct usb_hcd *hcd)
-{
-	struct xhci_hcd		*xhci = hcd_to_xhci(hcd);
-	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
-
-	xhci_shutdown(hcd);
-
-	/* Yet another workaround for spurious wakeups at shutdown with HSW */
-	if (xhci->quirks & XHCI_SPURIOUS_WAKEUP)
-		pci_set_power_state(pdev, PCI_D3hot);
 }
 #endif /* CONFIG_PM */
 
@@ -491,11 +475,10 @@ static struct pci_driver xhci_pci_driver = {
 
 static int __init xhci_pci_init(void)
 {
-	xhci_init_driver(&xhci_pci_hc_driver, &xhci_pci_overrides);
+	xhci_init_driver(&xhci_pci_hc_driver, xhci_pci_setup);
 #ifdef CONFIG_PM
 	xhci_pci_hc_driver.pci_suspend = xhci_pci_suspend;
 	xhci_pci_hc_driver.pci_resume = xhci_pci_resume;
-	xhci_pci_hc_driver.shutdown = xhci_pci_shutdown;
 #endif
 	return pci_register_driver(&xhci_pci_driver);
 }

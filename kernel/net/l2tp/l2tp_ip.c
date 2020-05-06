@@ -142,19 +142,19 @@ static int l2tp_ip_recv(struct sk_buff *skb)
 	}
 
 	/* Ok, this is a data packet. Lookup the session. */
-	session = l2tp_session_get(net, NULL, session_id, true);
-	if (!session)
+	session = l2tp_session_find(net, NULL, session_id);
+	if (session == NULL)
 		goto discard;
 
 	tunnel = session->tunnel;
-	if (!tunnel)
-		goto discard_sess;
+	if (tunnel == NULL)
+		goto discard;
 
 	/* Trace packet contents, if enabled */
 	if (tunnel->debug & L2TP_MSG_DATA) {
 		length = min(32u, skb->len);
 		if (!pskb_may_pull(skb, length))
-			goto discard_sess;
+			goto discard;
 
 		/* Point to L2TP header */
 		optr = ptr = skb->data;
@@ -167,7 +167,6 @@ static int l2tp_ip_recv(struct sk_buff *skb)
 		goto discard;
 
 	l2tp_recv_common(session, skb, ptr, optr, 0, skb->len, tunnel->recv_payload_hook);
-	l2tp_session_dec_refcount(session);
 
 	return 0;
 
@@ -181,22 +180,20 @@ pass_up:
 
 	tunnel_id = ntohl(*(__be32 *) &skb->data[4]);
 	tunnel = l2tp_tunnel_find(net, tunnel_id);
-	if (tunnel) {
+	if (tunnel != NULL)
 		sk = tunnel->sock;
-		sock_hold(sk);
-	} else {
+	else {
 		struct iphdr *iph = (struct iphdr *) skb_network_header(skb);
 
 		read_lock_bh(&l2tp_ip_lock);
 		sk = __l2tp_ip_bind_lookup(net, iph->daddr, 0, tunnel_id);
-		if (!sk) {
-			read_unlock_bh(&l2tp_ip_lock);
-			goto discard;
-		}
-
-		sock_hold(sk);
 		read_unlock_bh(&l2tp_ip_lock);
 	}
+
+	if (sk == NULL)
+		goto discard;
+
+	sock_hold(sk);
 
 	if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb))
 		goto discard_put;
@@ -204,12 +201,6 @@ pass_up:
 	nf_reset(skb);
 
 	return sk_receive_skb(sk, skb, 1);
-
-discard_sess:
-	if (session->deref)
-		session->deref(session);
-	l2tp_session_dec_refcount(session);
-	goto discard;
 
 discard_put:
 	sock_put(sk);
@@ -401,7 +392,7 @@ drop:
 /* Userspace will call sendmsg() on the tunnel socket to send L2TP
  * control frames.
  */
-static int l2tp_ip_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
+static int l2tp_ip_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg, size_t len)
 {
 	struct sk_buff *skb;
 	int rc;
@@ -457,7 +448,7 @@ static int l2tp_ip_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	*((__be32 *) skb_put(skb, 4)) = 0;
 
 	/* Copy user data into skb */
-	rc = memcpy_from_msg(skb_put(skb, len), msg, len);
+	rc = memcpy_fromiovec(skb_put(skb, len), msg->msg_iov, len);
 	if (rc < 0) {
 		kfree_skb(skb);
 		goto error;
@@ -522,7 +513,7 @@ no_route:
 	goto out;
 }
 
-static int l2tp_ip_recvmsg(struct sock *sk, struct msghdr *msg,
+static int l2tp_ip_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			   size_t len, int noblock, int flags, int *addr_len)
 {
 	struct inet_sock *inet = inet_sk(sk);
@@ -544,7 +535,7 @@ static int l2tp_ip_recvmsg(struct sock *sk, struct msghdr *msg,
 		copied = len;
 	}
 
-	err = skb_copy_datagram_msg(skb, 0, msg, copied);
+	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
 	if (err)
 		goto done;
 
@@ -695,4 +686,3 @@ MODULE_VERSION("1.0");
  * enums
  */
 MODULE_ALIAS_NET_PF_PROTO_TYPE(PF_INET, 2, IPPROTO_L2TP);
-MODULE_ALIAS_NET_PF_PROTO(PF_INET, IPPROTO_L2TP);

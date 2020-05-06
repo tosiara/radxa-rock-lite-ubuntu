@@ -4,6 +4,7 @@
  */
 #include <linux/module.h>
 #include <linux/nfs_fs.h>
+#include <linux/nfs_idmap.h>
 #include <linux/nfs_mount.h>
 #include <linux/sunrpc/addr.h>
 #include <linux/sunrpc/auth.h>
@@ -14,7 +15,6 @@
 #include "callback.h"
 #include "delegation.h"
 #include "nfs4session.h"
-#include "nfs4idmap.h"
 #include "pnfs.h"
 #include "netns.h"
 
@@ -242,25 +242,28 @@ void nfs4_free_client(struct nfs_client *clp)
  */
 static int nfs4_init_callback(struct nfs_client *clp)
 {
-	struct rpc_xprt *xprt;
 	int error;
 
-	xprt = rcu_dereference_raw(clp->cl_rpcclient->cl_xprt);
+	if (clp->rpc_ops->version == 4) {
+		struct rpc_xprt *xprt;
 
-	if (nfs4_has_session(clp)) {
-		error = xprt_setup_backchannel(xprt, NFS41_BC_MIN_CALLBACKS);
-		if (error < 0)
+		xprt = rcu_dereference_raw(clp->cl_rpcclient->cl_xprt);
+
+		if (nfs4_has_session(clp)) {
+			error = xprt_setup_backchannel(xprt,
+						NFS41_BC_MIN_CALLBACKS);
+			if (error < 0)
+				return error;
+		}
+
+		error = nfs_callback_up(clp->cl_mvops->minor_version, xprt);
+		if (error < 0) {
+			dprintk("%s: failed to start callback. Error = %d\n",
+				__func__, error);
 			return error;
+		}
+		__set_bit(NFS_CS_CALLBACK, &clp->cl_res_state);
 	}
-
-	error = nfs_callback_up(clp->cl_mvops->minor_version, xprt);
-	if (error < 0) {
-		dprintk("%s: failed to start callback. Error = %d\n",
-			__func__, error);
-		return error;
-	}
-	__set_bit(NFS_CS_CALLBACK, &clp->cl_res_state);
-
 	return 0;
 }
 
@@ -501,7 +504,8 @@ int nfs40_walk_client_list(struct nfs_client *new,
 			atomic_inc(&pos->cl_count);
 			spin_unlock(&nn->nfs_client_lock);
 
-			nfs_put_client(prev);
+			if (prev)
+				nfs_put_client(prev);
 			prev = pos;
 
 			status = nfs_wait_client_init_complete(pos);
@@ -522,7 +526,8 @@ int nfs40_walk_client_list(struct nfs_client *new,
 		atomic_inc(&pos->cl_count);
 		spin_unlock(&nn->nfs_client_lock);
 
-		nfs_put_client(prev);
+		if (prev)
+			nfs_put_client(prev);
 		prev = pos;
 
 		status = nfs4_proc_setclientid_confirm(pos, &clid, cred);
@@ -553,7 +558,8 @@ int nfs40_walk_client_list(struct nfs_client *new,
 
 	/* No match found. The server lost our clientid */
 out:
-	nfs_put_client(prev);
+	if (prev)
+		nfs_put_client(prev);
 	dprintk("NFS: <-- %s status = %d\n", __func__, status);
 	return status;
 }
@@ -621,9 +627,6 @@ int nfs41_walk_client_list(struct nfs_client *new,
 	spin_lock(&nn->nfs_client_lock);
 	list_for_each_entry(pos, &nn->nfs_client_list, cl_share_link) {
 
-		if (pos == new)
-			goto found;
-
 		if (pos->rpc_ops != new->rpc_ops)
 			continue;
 
@@ -638,10 +641,15 @@ int nfs41_walk_client_list(struct nfs_client *new,
 			atomic_inc(&pos->cl_count);
 			spin_unlock(&nn->nfs_client_lock);
 
-			nfs_put_client(prev);
+			if (prev)
+				nfs_put_client(prev);
 			prev = pos;
 
 			status = nfs_wait_client_init_complete(pos);
+			if (pos->cl_cons_state == NFS_CS_SESSION_INITING) {
+				nfs4_schedule_lease_recovery(pos);
+				status = nfs4_wait_clnt_recover(pos);
+			}
 			spin_lock(&nn->nfs_client_lock);
 			if (status < 0)
 				break;
@@ -667,7 +675,7 @@ int nfs41_walk_client_list(struct nfs_client *new,
 		 */
 		if (!nfs4_match_client_owner_id(pos, new))
 			continue;
-found:
+
 		atomic_inc(&pos->cl_count);
 		*result = pos;
 		status = 0;
@@ -676,21 +684,20 @@ found:
 		break;
 	}
 
+	/* No matching nfs_client found. */
 	spin_unlock(&nn->nfs_client_lock);
 	dprintk("NFS: <-- %s status = %d\n", __func__, status);
-	nfs_put_client(prev);
+	if (prev)
+		nfs_put_client(prev);
 	return status;
 }
 #endif	/* CONFIG_NFS_V4_1 */
 
 static void nfs4_destroy_server(struct nfs_server *server)
 {
-	LIST_HEAD(freeme);
-
 	nfs_server_return_all_delegations(server);
 	unset_pnfs_layoutdriver(server);
-	nfs4_purge_state_owners(server, &freeme);
-	nfs4_free_state_owners(&freeme);
+	nfs4_purge_state_owners(server);
 }
 
 /*
@@ -732,7 +739,10 @@ static bool nfs4_cb_match_client(const struct sockaddr *addr,
 		return false;
 
 	/* Match only the IP address, not the port number */
-	return rpc_cmp_addr(addr, clap);
+	if (!nfs_sockaddr_match_ipaddr(addr, clap))
+		return false;
+
+	return true;
 }
 
 /*
@@ -751,7 +761,7 @@ nfs4_find_client_sessionid(struct net *net, const struct sockaddr *addr,
 
 	spin_lock(&nn->nfs_client_lock);
 	list_for_each_entry(clp, &nn->nfs_client_list, cl_share_link) {
-		if (!nfs4_cb_match_client(addr, clp, minorversion))
+		if (nfs4_cb_match_client(addr, clp, minorversion) == false)
 			continue;
 
 		if (!nfs4_has_session(clp))
@@ -847,15 +857,14 @@ error:
  */
 struct nfs_client *nfs4_set_ds_client(struct nfs_client* mds_clp,
 		const struct sockaddr *ds_addr, int ds_addrlen,
-		int ds_proto, unsigned int ds_timeo, unsigned int ds_retrans,
-		u32 minor_version, rpc_authflavor_t au_flavor)
+		int ds_proto, unsigned int ds_timeo, unsigned int ds_retrans)
 {
 	struct nfs_client_initdata cl_init = {
 		.addr = ds_addr,
 		.addrlen = ds_addrlen,
 		.nfs_mod = &nfs_v4,
 		.proto = ds_proto,
-		.minorversion = minor_version,
+		.minorversion = mds_clp->cl_minorversion,
 		.net = mds_clp->cl_net,
 	};
 	struct rpc_timeout ds_timeout;
@@ -873,7 +882,7 @@ struct nfs_client *nfs4_set_ds_client(struct nfs_client* mds_clp,
 	 */
 	nfs_init_timeout_values(&ds_timeout, ds_proto, ds_timeo, ds_retrans);
 	clp = nfs_get_client(&cl_init, &ds_timeout, mds_clp->cl_ipaddr,
-			     au_flavor);
+			     mds_clp->cl_rpcclient->cl_auth->au_flavor);
 
 	dprintk("<-- %s %p\n", __func__, clp);
 	return clp;
@@ -1131,7 +1140,7 @@ error:
  */
 static int nfs_probe_destination(struct nfs_server *server)
 {
-	struct inode *inode = d_inode(server->super->s_root);
+	struct inode *inode = server->super->s_root->d_inode;
 	struct nfs_fattr *fattr;
 	int error;
 

@@ -105,7 +105,7 @@ sudo cp $maindir/kernel/modules/lib/modules/* /mnt/tmp/lib/modules/ -r
 
 sudo umount /mnt/tmp/{proc,sys,dev/pts,dev,}
 
-export IMAGENAME="radxa-rock-lite-kernel4.4-ubuntu16-sdcard.img"
+export IMAGENAME="radxa-rock-lite-kernel3.18-ubuntu16-sdcard.img"
 echo "Make sdcard image $IMAGENAME"
 cd $maindir/build
 dd if=/dev/zero of=$IMAGENAME bs=1M count=1200

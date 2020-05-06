@@ -2252,6 +2252,11 @@ static int smsc75xx_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 			skb_pull(skb, align_count);
 	}
 
+	if (unlikely(skb->len < 0)) {
+		netdev_warn(dev->net, "invalid rx length<0 %d\n", skb->len);
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -2260,9 +2265,13 @@ static struct sk_buff *smsc75xx_tx_fixup(struct usbnet *dev,
 {
 	u32 tx_cmd_a, tx_cmd_b;
 
-	if (skb_cow_head(skb, SMSC75XX_TX_OVERHEAD)) {
+	if (skb_headroom(skb) < SMSC75XX_TX_OVERHEAD) {
+		struct sk_buff *skb2 =
+			skb_copy_expand(skb, SMSC75XX_TX_OVERHEAD, 0, flags);
 		dev_kfree_skb_any(skb);
-		return NULL;
+		skb = skb2;
+		if (!skb)
+			return NULL;
 	}
 
 	tx_cmd_a = (u32)(skb->len & TX_CMD_A_LEN) | TX_CMD_A_FCS;

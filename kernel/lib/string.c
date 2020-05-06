@@ -62,6 +62,14 @@ int strncasecmp(const char *s1, const char *s2, size_t len)
 }
 EXPORT_SYMBOL(strncasecmp);
 #endif
+#ifndef __HAVE_ARCH_STRNICMP
+#undef strnicmp
+int strnicmp(const char *s1, const char *s2, size_t len)
+{
+	return strncasecmp(s1, s2, len);
+}
+EXPORT_SYMBOL(strnicmp);
+#endif
 
 #ifndef __HAVE_ARCH_STRCASECMP
 int strcasecmp(const char *s1, const char *s2)
@@ -402,12 +410,12 @@ EXPORT_SYMBOL(strchrnul);
  */
 char *strrchr(const char *s, int c)
 {
-	const char *last = NULL;
-	do {
-		if (*s == (char)c)
-			last = s;
-	} while (*s++);
-	return (char *)last;
+       const char *p = s + strlen(s);
+       do {
+           if (*p == (char)c)
+               return (char *)p;
+       } while (--p >= s);
+       return NULL;
 }
 EXPORT_SYMBOL(strrchr);
 #endif
@@ -630,6 +638,35 @@ bool sysfs_streq(const char *s1, const char *s2)
 }
 EXPORT_SYMBOL(sysfs_streq);
 
+/**
+ * strtobool - convert common user inputs into boolean values
+ * @s: input string
+ * @res: result
+ *
+ * This routine returns 0 iff the first character is one of 'Yy1Nn0'.
+ * Otherwise it will return -EINVAL.  Value pointed to by res is
+ * updated upon finding a match.
+ */
+int strtobool(const char *s, bool *res)
+{
+	switch (s[0]) {
+	case 'y':
+	case 'Y':
+	case '1':
+		*res = true;
+		break;
+	case 'n':
+	case 'N':
+	case '0':
+		*res = false;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(strtobool);
+
 #ifndef __HAVE_ARCH_MEMSET
 /**
  * memset - Fill a region of memory with the given value
@@ -655,11 +692,6 @@ EXPORT_SYMBOL(memset);
  *		      keying data) with 0s.
  * @s: Pointer to the start of the area.
  * @count: The size of the area.
- *
- * Note: usually using memset() is just fine (!), but in cases
- * where clearing out _local_ data at the end of a scope is
- * necessary, memzero_explicit() should be used instead in
- * order to prevent the compiler from optimising away zeroing.
  *
  * memzero_explicit() doesn't need an arch-specific version as
  * it just invokes the one of memset() implicitly.
@@ -895,7 +927,7 @@ void *memchr_inv(const void *start, int c, size_t bytes)
 
 	value64 = value;
 #if defined(CONFIG_ARCH_HAS_FAST_MULTIPLIER) && BITS_PER_LONG == 64
-	value64 *= 0x0101010101010101ULL;
+	value64 *= 0x0101010101010101;
 #elif defined(CONFIG_ARCH_HAS_FAST_MULTIPLIER)
 	value64 *= 0x01010101;
 	value64 |= value64 << 32;
@@ -929,20 +961,3 @@ void *memchr_inv(const void *start, int c, size_t bytes)
 	return check_bytes8(start, value, bytes % 8);
 }
 EXPORT_SYMBOL(memchr_inv);
-
-/**
- * strreplace - Replace all occurrences of character in string.
- * @s: The string to operate on.
- * @old: The character being replaced.
- * @new: The character @old is replaced with.
- *
- * Returns pointer to the nul byte at the end of @s.
- */
-char *strreplace(char *s, char old, char new)
-{
-	for (; *s; ++s)
-		if (*s == old)
-			*s = new;
-	return s;
-}
-EXPORT_SYMBOL(strreplace);

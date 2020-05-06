@@ -186,12 +186,6 @@ int copy_siginfo_to_user32(compat_siginfo_t __user *to, const siginfo_t *from)
 		err |= __put_user(from->si_uid, &to->si_uid);
 		err |= __put_user(from->si_int, &to->si_int);
 		break;
-	case __SI_SYS:
-		err |= __put_user((compat_uptr_t)(unsigned long)
-				from->si_call_addr, &to->si_call_addr);
-		err |= __put_user(from->si_syscall, &to->si_syscall);
-		err |= __put_user(from->si_arch, &to->si_arch);
-		break;
 	default: /* this is just in case for now ... */
 		err |= __put_user(from->si_pid, &to->si_pid);
 		err |= __put_user(from->si_uid, &to->si_uid);
@@ -356,7 +350,7 @@ static int compat_restore_sigframe(struct pt_regs *regs,
 	 */
 	regs->syscallno = ~0UL;
 
-	err |= !valid_user_regs(&regs->user_regs, current);
+	err |= !valid_user_regs(&regs->user_regs);
 
 	aux = (struct compat_aux_sigframe __user *) sf->uc.uc_regspace;
 	if (err == 0)
@@ -370,7 +364,7 @@ asmlinkage int compat_sys_sigreturn(struct pt_regs *regs)
 	struct compat_sigframe __user *frame;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	/*
 	 * Since we stacked the signal on a 64-bit boundary,
@@ -394,7 +388,7 @@ badframe:
 	if (show_unhandled_signals)
 		pr_info_ratelimited("%s[%d]: bad frame in %s: pc=%08llx sp=%08llx\n",
 				    current->comm, task_pid_nr(current), __func__,
-				    regs->pc, regs->compat_sp);
+				    regs->pc, regs->sp);
 	force_sig(SIGSEGV, current);
 	return 0;
 }
@@ -404,7 +398,7 @@ asmlinkage int compat_sys_rt_sigreturn(struct pt_regs *regs)
 	struct compat_rt_sigframe __user *frame;
 
 	/* Always make any pending restarted system calls return -EINTR */
-	current->restart_block.fn = do_no_restart_syscall;
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	/*
 	 * Since we stacked the signal on a 64-bit boundary,
@@ -431,7 +425,7 @@ badframe:
 	if (show_unhandled_signals)
 		pr_info_ratelimited("%s[%d]: bad frame in %s: pc=%08llx sp=%08llx\n",
 				    current->comm, task_pid_nr(current), __func__,
-				    regs->pc, regs->compat_sp);
+				    regs->pc, regs->sp);
 	force_sig(SIGSEGV, current);
 	return 0;
 }
@@ -463,7 +457,7 @@ static void compat_setup_return(struct pt_regs *regs, struct k_sigaction *ka,
 {
 	compat_ulong_t handler = ptr_to_compat(ka->sa.sa_handler);
 	compat_ulong_t retcode;
-	compat_ulong_t spsr = regs->pstate & ~(PSR_f | COMPAT_PSR_E_BIT);
+	compat_ulong_t spsr = regs->pstate & ~PSR_f;
 	int thumb;
 
 	/* Check if the handler is written for ARM or Thumb */
@@ -476,9 +470,6 @@ static void compat_setup_return(struct pt_regs *regs, struct k_sigaction *ka,
 
 	/* The IT state must be cleared for both ARM and Thumb-2 */
 	spsr &= ~COMPAT_PSR_IT_MASK;
-
-	/* Restore the original endianness */
-	spsr |= COMPAT_PSR_ENDSTATE;
 
 	if (ka->sa.sa_flags & SA_RESTORER) {
 		retcode = ptr_to_compat(ka->sa.sa_restorer);
@@ -527,7 +518,7 @@ static int compat_setup_sigframe(struct compat_sigframe __user *sf,
 
 	__put_user_error((compat_ulong_t)0, &sf->uc.uc_mcontext.trap_no, err);
 	/* set the compat FSR WnR */
-	__put_user_error(!!(current->thread.fault_code & ESR_ELx_WNR) <<
+	__put_user_error(!!(current->thread.fault_code & ESR_EL1_WRITE) <<
 			 FSR_WRITE_SHIFT, &sf->uc.uc_mcontext.error_code, err);
 	__put_user_error(current->thread.fault_address, &sf->uc.uc_mcontext.fault_address, err);
 	__put_user_error(set->sig[0], &sf->uc.uc_mcontext.oldmask, err);

@@ -23,8 +23,6 @@
 #include <xen/features.h>
 #include <xen/events.h>
 #include <asm/xen/pci.h>
-#include <asm/xen/cpuid.h>
-#include <asm/apic.h>
 #include <asm/i8259.h>
 
 static int xen_pcifront_enable_irq(struct pci_dev *dev)
@@ -179,7 +177,7 @@ static int xen_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 	if (ret)
 		goto error;
 	i = 0;
-	for_each_pci_msi_entry(msidesc, dev) {
+	list_for_each_entry(msidesc, &dev->msi_list, list) {
 		irq = xen_bind_pirq_msi_to_irq(dev, msidesc, v[i],
 					       (type == PCI_CAP_ID_MSI) ? nvec : 1,
 					       (type == PCI_CAP_ID_MSIX) ?
@@ -230,15 +228,24 @@ static int xen_hvm_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 	if (type == PCI_CAP_ID_MSI && nvec > 1)
 		return 1;
 
-	for_each_pci_msi_entry(msidesc, dev) {
-		pirq = xen_allocate_pirq_msi(dev, msidesc);
-		if (pirq < 0) {
-			irq = -ENODEV;
-			goto error;
+	list_for_each_entry(msidesc, &dev->msi_list, list) {
+		__read_msi_msg(msidesc, &msg);
+		pirq = MSI_ADDR_EXT_DEST_ID(msg.address_hi) |
+			((msg.address_lo >> MSI_ADDR_DEST_ID_SHIFT) & 0xff);
+		if (msg.data != XEN_PIRQ_MSI_DATA ||
+		    xen_irq_from_pirq(pirq) < 0) {
+			pirq = xen_allocate_pirq_msi(dev, msidesc);
+			if (pirq < 0) {
+				irq = -ENODEV;
+				goto error;
+			}
+			xen_msi_compose_msg(dev, pirq, &msg);
+			__write_msi_msg(msidesc, &msg);
+			dev_dbg(&dev->dev, "xen: msi bound to pirq=%d\n", pirq);
+		} else {
+			dev_dbg(&dev->dev,
+				"xen: msi already bound to pirq=%d\n", pirq);
 		}
-		xen_msi_compose_msg(dev, pirq, &msg);
-		__pci_write_msi_msg(msidesc, &msg);
-		dev_dbg(&dev->dev, "xen: msi bound to pirq=%d\n", pirq);
 		irq = xen_bind_pirq_msi_to_irq(dev, msidesc, pirq,
 					       (type == PCI_CAP_ID_MSI) ? nvec : 1,
 					       (type == PCI_CAP_ID_MSIX) ?
@@ -265,7 +272,7 @@ static int xen_initdom_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 	int ret = 0;
 	struct msi_desc *msidesc;
 
-	for_each_pci_msi_entry(msidesc, dev) {
+	list_for_each_entry(msidesc, &dev->msi_list, list) {
 		struct physdev_map_pirq map_irq;
 		domid_t domid;
 
@@ -289,16 +296,12 @@ static int xen_initdom_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 			map_irq.entry_nr = nvec;
 		} else if (type == PCI_CAP_ID_MSIX) {
 			int pos;
-			unsigned long flags;
 			u32 table_offset, bir;
 
 			pos = dev->msix_cap;
 			pci_read_config_dword(dev, pos + PCI_MSIX_TABLE,
 					      &table_offset);
 			bir = (u8)(table_offset & PCI_MSIX_TABLE_BIR);
-			flags = pci_resource_flags(dev, bir);
-			if (!flags || (flags & IORESOURCE_UNSET))
-				return -EINVAL;
 
 			map_irq.table_base = pci_resource_start(dev, bir);
 			map_irq.entry_nr = msidesc->msi_attrib.entry_nr;
@@ -377,7 +380,7 @@ static void xen_teardown_msi_irqs(struct pci_dev *dev)
 {
 	struct msi_desc *msidesc;
 
-	msidesc = first_pci_msi_entry(dev);
+	msidesc = list_entry(dev->msi_list.next, struct msi_desc, list);
 	if (msidesc->msi_attrib.is_msix)
 		xen_pci_frontend_disable_msix(dev);
 	else
@@ -391,7 +394,14 @@ static void xen_teardown_msi_irq(unsigned int irq)
 {
 	xen_destroy_irq(irq);
 }
-
+static u32 xen_nop_msi_mask_irq(struct msi_desc *desc, u32 mask, u32 flag)
+{
+	return 0;
+}
+static u32 xen_nop_msix_mask_irq(struct msi_desc *desc, u32 flag)
+{
+	return 0;
+}
 #endif
 
 int __init pci_xen_init(void)
@@ -415,32 +425,11 @@ int __init pci_xen_init(void)
 	x86_msi.setup_msi_irqs = xen_setup_msi_irqs;
 	x86_msi.teardown_msi_irq = xen_teardown_msi_irq;
 	x86_msi.teardown_msi_irqs = xen_teardown_msi_irqs;
-	pci_msi_ignore_mask = 1;
+	x86_msi.msi_mask_irq = xen_nop_msi_mask_irq;
+	x86_msi.msix_mask_irq = xen_nop_msix_mask_irq;
 #endif
 	return 0;
 }
-
-#ifdef CONFIG_PCI_MSI
-void __init xen_msi_init(void)
-{
-	if (!disable_apic) {
-		/*
-		 * If hardware supports (x2)APIC virtualization (as indicated
-		 * by hypervisor's leaf 4) then we don't need to use pirqs/
-		 * event channels for MSI handling and instead use regular
-		 * APIC processing
-		 */
-		uint32_t eax = cpuid_eax(xen_cpuid_base() + 4);
-
-		if (((eax & XEN_HVM_CPUID_X2APIC_VIRT) && x2apic_mode) ||
-		    ((eax & XEN_HVM_CPUID_APIC_ACCESS_VIRT) && cpu_has_apic))
-			return;
-	}
-
-	x86_msi.setup_msi_irqs = xen_hvm_setup_msi_irqs;
-	x86_msi.teardown_msi_irq = xen_teardown_msi_irq;
-}
-#endif
 
 int __init pci_xen_hvm_init(void)
 {
@@ -457,11 +446,8 @@ int __init pci_xen_hvm_init(void)
 #endif
 
 #ifdef CONFIG_PCI_MSI
-	/*
-	 * We need to wait until after x2apic is initialized
-	 * before we can set MSI IRQ ops.
-	 */
-	x86_platform.apic_post_init = xen_msi_init;
+	x86_msi.setup_msi_irqs = xen_hvm_setup_msi_irqs;
+	x86_msi.teardown_msi_irq = xen_teardown_msi_irq;
 #endif
 	return 0;
 }
@@ -475,7 +461,8 @@ int __init pci_xen_initial_domain(void)
 	x86_msi.setup_msi_irqs = xen_initdom_setup_msi_irqs;
 	x86_msi.teardown_msi_irq = xen_teardown_msi_irq;
 	x86_msi.restore_msi_irqs = xen_initdom_restore_msi_irqs;
-	pci_msi_ignore_mask = 1;
+	x86_msi.msi_mask_irq = xen_nop_msi_mask_irq;
+	x86_msi.msix_mask_irq = xen_nop_msix_mask_irq;
 #endif
 	__acpi_register_gsi = acpi_register_gsi_xen;
 	__acpi_unregister_gsi = NULL;

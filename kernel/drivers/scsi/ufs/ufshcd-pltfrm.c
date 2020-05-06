@@ -38,7 +38,20 @@
 #include <linux/of.h>
 
 #include "ufshcd.h"
-#include "ufshcd-pltfrm.h"
+
+static const struct of_device_id ufs_of_match[];
+static struct ufs_hba_variant_ops *get_variant_ops(struct device *dev)
+{
+	if (dev->of_node) {
+		const struct of_device_id *match;
+
+		match = of_match_node(ufs_of_match, dev->of_node);
+		if (match)
+			return (struct ufs_hba_variant_ops *)match->data;
+	}
+
+	return NULL;
+}
 
 static int ufshcd_parse_clock_info(struct ufs_hba *hba)
 {
@@ -161,7 +174,7 @@ static int ufshcd_populate_vreg(struct device *dev, const char *name,
 	if (ret) {
 		dev_err(dev, "%s: unable to find %s err %d\n",
 				__func__, prop_name, ret);
-		goto out;
+		goto out_free;
 	}
 
 	vreg->min_uA = 0;
@@ -183,6 +196,9 @@ static int ufshcd_populate_vreg(struct device *dev, const char *name,
 
 	goto out;
 
+out_free:
+	devm_kfree(dev, vreg);
+	vreg = NULL;
 out:
 	if (!ret)
 		*out_vreg = vreg;
@@ -229,11 +245,10 @@ out:
  * Returns 0 if successful
  * Returns non-zero otherwise
  */
-int ufshcd_pltfrm_suspend(struct device *dev)
+static int ufshcd_pltfrm_suspend(struct device *dev)
 {
 	return ufshcd_system_suspend(dev_get_drvdata(dev));
 }
-EXPORT_SYMBOL_GPL(ufshcd_pltfrm_suspend);
 
 /**
  * ufshcd_pltfrm_resume - resume power management function
@@ -242,47 +257,46 @@ EXPORT_SYMBOL_GPL(ufshcd_pltfrm_suspend);
  * Returns 0 if successful
  * Returns non-zero otherwise
  */
-int ufshcd_pltfrm_resume(struct device *dev)
+static int ufshcd_pltfrm_resume(struct device *dev)
 {
 	return ufshcd_system_resume(dev_get_drvdata(dev));
 }
-EXPORT_SYMBOL_GPL(ufshcd_pltfrm_resume);
+#else
+#define ufshcd_pltfrm_suspend	NULL
+#define ufshcd_pltfrm_resume	NULL
+#endif
 
-int ufshcd_pltfrm_runtime_suspend(struct device *dev)
+#ifdef CONFIG_PM_RUNTIME
+static int ufshcd_pltfrm_runtime_suspend(struct device *dev)
 {
 	return ufshcd_runtime_suspend(dev_get_drvdata(dev));
 }
-EXPORT_SYMBOL_GPL(ufshcd_pltfrm_runtime_suspend);
-
-int ufshcd_pltfrm_runtime_resume(struct device *dev)
+static int ufshcd_pltfrm_runtime_resume(struct device *dev)
 {
 	return ufshcd_runtime_resume(dev_get_drvdata(dev));
 }
-EXPORT_SYMBOL_GPL(ufshcd_pltfrm_runtime_resume);
-
-int ufshcd_pltfrm_runtime_idle(struct device *dev)
+static int ufshcd_pltfrm_runtime_idle(struct device *dev)
 {
 	return ufshcd_runtime_idle(dev_get_drvdata(dev));
 }
-EXPORT_SYMBOL_GPL(ufshcd_pltfrm_runtime_idle);
+#else /* !CONFIG_PM_RUNTIME */
+#define ufshcd_pltfrm_runtime_suspend	NULL
+#define ufshcd_pltfrm_runtime_resume	NULL
+#define ufshcd_pltfrm_runtime_idle	NULL
+#endif /* CONFIG_PM_RUNTIME */
 
-#endif /* CONFIG_PM */
-
-void ufshcd_pltfrm_shutdown(struct platform_device *pdev)
+static void ufshcd_pltfrm_shutdown(struct platform_device *pdev)
 {
 	ufshcd_shutdown((struct ufs_hba *)platform_get_drvdata(pdev));
 }
-EXPORT_SYMBOL_GPL(ufshcd_pltfrm_shutdown);
 
 /**
- * ufshcd_pltfrm_init - probe routine of the driver
+ * ufshcd_pltfrm_probe - probe routine of the driver
  * @pdev: pointer to Platform device handle
- * @vops: pointer to variant ops
  *
  * Returns 0 on success, non-zero value on failure
  */
-int ufshcd_pltfrm_init(struct platform_device *pdev,
-		       struct ufs_hba_variant_ops *vops)
+static int ufshcd_pltfrm_probe(struct platform_device *pdev)
 {
 	struct ufs_hba *hba;
 	void __iomem *mmio_base;
@@ -310,19 +324,19 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 		goto out;
 	}
 
-	hba->vops = vops;
+	hba->vops = get_variant_ops(&pdev->dev);
 
 	err = ufshcd_parse_clock_info(hba);
 	if (err) {
 		dev_err(&pdev->dev, "%s: clock parse failed %d\n",
 				__func__, err);
-		goto dealloc_host;
+		goto out;
 	}
 	err = ufshcd_parse_regulator_info(hba);
 	if (err) {
 		dev_err(&pdev->dev, "%s: regulator init failed %d\n",
 				__func__, err);
-		goto dealloc_host;
+		goto out;
 	}
 
 	pm_runtime_set_active(&pdev->dev);
@@ -341,12 +355,51 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 out_disable_rpm:
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
-dealloc_host:
-	ufshcd_dealloc_host(hba);
 out:
 	return err;
 }
-EXPORT_SYMBOL_GPL(ufshcd_pltfrm_init);
+
+/**
+ * ufshcd_pltfrm_remove - remove platform driver routine
+ * @pdev: pointer to platform device handle
+ *
+ * Returns 0 on success, non-zero value on failure
+ */
+static int ufshcd_pltfrm_remove(struct platform_device *pdev)
+{
+	struct ufs_hba *hba =  platform_get_drvdata(pdev);
+
+	pm_runtime_get_sync(&(pdev)->dev);
+	ufshcd_remove(hba);
+	return 0;
+}
+
+static const struct of_device_id ufs_of_match[] = {
+	{ .compatible = "jedec,ufs-1.1"},
+	{},
+};
+
+static const struct dev_pm_ops ufshcd_dev_pm_ops = {
+	.suspend	= ufshcd_pltfrm_suspend,
+	.resume		= ufshcd_pltfrm_resume,
+	.runtime_suspend = ufshcd_pltfrm_runtime_suspend,
+	.runtime_resume  = ufshcd_pltfrm_runtime_resume,
+	.runtime_idle    = ufshcd_pltfrm_runtime_idle,
+};
+
+static struct platform_driver ufshcd_pltfrm_driver = {
+	.probe	= ufshcd_pltfrm_probe,
+	.remove	= ufshcd_pltfrm_remove,
+	.shutdown = ufshcd_pltfrm_shutdown,
+	.driver	= {
+		.name	= "ufshcd",
+		.owner	= THIS_MODULE,
+		.pm	= &ufshcd_dev_pm_ops,
+		.of_match_table = ufs_of_match,
+	},
+};
+
+module_platform_driver(ufshcd_pltfrm_driver);
 
 MODULE_AUTHOR("Santosh Yaragnavi <santosh.sy@samsung.com>");
 MODULE_AUTHOR("Vinayak Holikatti <h.vinayak@samsung.com>");

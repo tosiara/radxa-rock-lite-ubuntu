@@ -274,7 +274,7 @@ static int construct_get_dest_keyring(struct key **_dest_keyring)
 			if (cred->request_key_auth) {
 				authkey = cred->request_key_auth;
 				down_read(&authkey->sem);
-				rka = authkey->payload.data[0];
+				rka = authkey->payload.data;
 				if (!test_bit(KEY_FLAG_REVOKED,
 					      &authkey->flags))
 					dest_keyring =
@@ -463,12 +463,12 @@ static struct key *construct_key_and_link(struct keyring_search_context *ctx,
 
 	kenter("");
 
-	if (ctx->index_key.type == &key_type_keyring)
-		return ERR_PTR(-EPERM);
-
 	ret = construct_get_dest_keyring(&dest_keyring);
 	if (ret)
 		goto error;
+
+	if (ctx->index_key.type == &key_type_keyring)
+		return ERR_PTR(-EPERM);
 
 	user = key_user_lookup(current_fsuid());
 	if (!user) {
@@ -623,9 +623,10 @@ int wait_for_key_construction(struct key *key, bool intr)
 			  intr ? TASK_INTERRUPTIBLE : TASK_UNINTERRUPTIBLE);
 	if (ret)
 		return -ERESTARTSYS;
-	ret = key_read_state(key);
-	if (ret < 0)
-		return ret;
+	if (test_bit(KEY_FLAG_NEGATIVE, &key->flags)) {
+		smp_rmb();
+		return key->type_data.reject_error;
+	}
 	return key_validate(key);
 }
 EXPORT_SYMBOL(wait_for_key_construction);

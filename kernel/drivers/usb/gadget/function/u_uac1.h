@@ -21,6 +21,8 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 
+#include "gadget_chips.h"
+
 #define FILE_PCM_PLAYBACK	"/dev/snd/pcmC0D0p"
 #define FILE_PCM_CAPTURE	"/dev/snd/pcmC0D0c"
 #define FILE_CONTROL		"/dev/snd/controlC0"
@@ -68,6 +70,7 @@ struct f_uac1_opts {
 	unsigned			fn_play_alloc:1;
 	unsigned			fn_cap_alloc:1;
 	unsigned			fn_cntl_alloc:1;
+	struct gaudio			*card;
 	struct mutex			lock;
 	int				refcnt;
 };

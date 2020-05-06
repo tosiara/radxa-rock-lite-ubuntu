@@ -43,13 +43,12 @@
 static int create_composite_quirk(struct snd_usb_audio *chip,
 				  struct usb_interface *iface,
 				  struct usb_driver *driver,
-				  const struct snd_usb_audio_quirk *quirk_comp)
+				  const struct snd_usb_audio_quirk *quirk)
 {
 	int probed_ifnum = get_iface_desc(iface->altsetting)->bInterfaceNumber;
-	const struct snd_usb_audio_quirk *quirk;
 	int err;
 
-	for (quirk = quirk_comp->data; quirk->ifnum >= 0; ++quirk) {
+	for (quirk = quirk->data; quirk->ifnum >= 0; ++quirk) {
 		iface = usb_ifnum_to_if(chip->dev, quirk->ifnum);
 		if (!iface)
 			continue;
@@ -59,17 +58,9 @@ static int create_composite_quirk(struct snd_usb_audio *chip,
 		err = snd_usb_create_quirk(chip, iface, driver, quirk);
 		if (err < 0)
 			return err;
-	}
-
-	for (quirk = quirk_comp->data; quirk->ifnum >= 0; ++quirk) {
-		iface = usb_ifnum_to_if(chip->dev, quirk->ifnum);
-		if (!iface)
-			continue;
-		if (quirk->ifnum != probed_ifnum &&
-		    !usb_interface_claimed(iface))
+		if (quirk->ifnum != probed_ifnum)
 			usb_driver_claim_interface(driver, iface, (void *)-1L);
 	}
-
 	return 0;
 }
 
@@ -114,9 +105,6 @@ static int create_standard_audio_quirk(struct snd_usb_audio *chip,
 	struct usb_host_interface *alts;
 	struct usb_interface_descriptor *altsd;
 	int err;
-
-	if (chip->usb_id == USB_ID(0x1686, 0x00dd)) /* Zoom R16/24 */
-		chip->tx_length_quirk = 1;
 
 	alts = &iface->altsetting[0];
 	altsd = get_iface_desc(alts);
@@ -548,7 +536,6 @@ int snd_usb_create_quirk(struct snd_usb_audio *chip,
 		[QUIRK_MIDI_CME] = create_any_midi_quirk,
 		[QUIRK_MIDI_AKAI] = create_any_midi_quirk,
 		[QUIRK_MIDI_FTDI] = create_any_midi_quirk,
-		[QUIRK_MIDI_CH345] = create_any_midi_quirk,
 		[QUIRK_AUDIO_STANDARD_INTERFACE] = create_standard_audio_quirk,
 		[QUIRK_AUDIO_FIXED_ENDPOINT] = create_fixed_stream_quirk,
 		[QUIRK_AUDIO_EDIROL_UAXX] = create_uaxx_quirk,
@@ -1129,20 +1116,16 @@ bool snd_usb_get_sample_rate_quirk(struct snd_usb_audio *chip)
 {
 	/* devices which do not support reading the sample rate. */
 	switch (chip->usb_id) {
-	case USB_ID(0x041E, 0x4080): /* Creative Live Cam VF0610 */
 	case USB_ID(0x045E, 0x075D): /* MS Lifecam Cinema  */
 	case USB_ID(0x045E, 0x076D): /* MS Lifecam HD-5000 */
 	case USB_ID(0x045E, 0x076E): /* MS Lifecam HD-5001 */
 	case USB_ID(0x045E, 0x076F): /* MS Lifecam HD-6000 */
 	case USB_ID(0x045E, 0x0772): /* MS Lifecam Studio */
 	case USB_ID(0x045E, 0x0779): /* MS Lifecam HD-3000 */
-	case USB_ID(0x047F, 0x02F7): /* Plantronics BT-600 */
 	case USB_ID(0x047F, 0x0415): /* Plantronics BT-300 */
 	case USB_ID(0x047F, 0xAA05): /* Plantronics DA45 */
 	case USB_ID(0x04D8, 0xFEEA): /* Benchmark DAC1 Pre */
 	case USB_ID(0x0556, 0x0014): /* Phoenix Audio TMX320VC */
-	case USB_ID(0x05A3, 0x9420): /* ELP HD USB Camera */
-	case USB_ID(0x05a7, 0x1020): /* Bose Companion 5 */
 	case USB_ID(0x074D, 0x3553): /* Outlaw RR2150 (Micronas UAC3553B) */
 	case USB_ID(0x1395, 0x740a): /* Sennheiser DECT */
 	case USB_ID(0x1901, 0x0191): /* GE B850V3 CP2114 audio interface */
@@ -1150,7 +1133,6 @@ bool snd_usb_get_sample_rate_quirk(struct snd_usb_audio *chip)
 	case USB_ID(0x1de7, 0x0014): /* Phoenix Audio TMX320 */
 	case USB_ID(0x1de7, 0x0114): /* Phoenix Audio MT202pcs */
 	case USB_ID(0x21B4, 0x0081): /* AudioQuest DragonFly */
-	case USB_ID(0x2912, 0x30c8): /* Audioengine D1 */
 		return true;
 	}
 	return false;
@@ -1306,8 +1288,6 @@ u64 snd_usb_interface_dsd_format_quirks(struct snd_usb_audio *chip,
 	case USB_ID(0x20b1, 0x3008): /* iFi Audio micro/nano iDSD */
 	case USB_ID(0x20b1, 0x2008): /* Matrix Audio X-Sabre */
 	case USB_ID(0x20b1, 0x300a): /* Matrix Audio Mini-i Pro */
-	case USB_ID(0x22d9, 0x0416): /* OPPO HA-1 */
-	case USB_ID(0x2772, 0x0230): /* Pro-Ject Pre Box S2 Digital */
 		if (fp->altsetting == 2)
 			return SNDRV_PCM_FMTBIT_DSD_U32_BE;
 		break;

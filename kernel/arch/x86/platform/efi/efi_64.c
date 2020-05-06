@@ -40,13 +40,16 @@
 #include <asm/fixmap.h>
 #include <asm/realmode.h>
 #include <asm/time.h>
-#include <asm/nospec-branch.h>
+
+static pgd_t *save_pgd __initdata;
+static unsigned long efi_flags __initdata;
 
 /*
  * We allocate runtime services regions bottom-up, starting from -4G, i.e.
  * 0xffff_ffff_0000_0000 and limit EFI VA mapping space to 64G.
  */
-static u64 efi_va = EFI_VA_START;
+static u64 efi_va	= -4 * (1UL << 30);
+#define EFI_VA_END	(-68 * (1UL << 30))
 
 /*
  * Scratch space used for switching the pagetable in the EFI stub
@@ -76,18 +79,17 @@ static void __init early_code_mapping_set_exec(int executable)
 	}
 }
 
-pgd_t * __init efi_call_phys_prolog(void)
+void __init efi_call_phys_prolog(void)
 {
 	unsigned long vaddress;
-	pgd_t *save_pgd;
-
 	int pgd;
 	int n_pgds;
 
 	if (!efi_enabled(EFI_OLD_MEMMAP))
-		return NULL;
+		return;
 
 	early_code_mapping_set_exec(1);
+	local_irq_save(efi_flags);
 
 	n_pgds = DIV_ROUND_UP((max_pfn << PAGE_SHIFT), PGDIR_SIZE);
 	save_pgd = kmalloc(n_pgds * sizeof(pgd_t), GFP_KERNEL);
@@ -98,29 +100,24 @@ pgd_t * __init efi_call_phys_prolog(void)
 		set_pgd(pgd_offset_k(pgd * PGDIR_SIZE), *pgd_offset_k(vaddress));
 	}
 	__flush_tlb_all();
-
-	return save_pgd;
 }
 
-void __init efi_call_phys_epilog(pgd_t *save_pgd)
+void __init efi_call_phys_epilog(void)
 {
 	/*
 	 * After the lock is released, the original page table is restored.
 	 */
-	int pgd_idx;
-	int nr_pgds;
+	int pgd;
+	int n_pgds = DIV_ROUND_UP((max_pfn << PAGE_SHIFT) , PGDIR_SIZE);
 
-	if (!save_pgd)
+	if (!efi_enabled(EFI_OLD_MEMMAP))
 		return;
 
-	nr_pgds = DIV_ROUND_UP((max_pfn << PAGE_SHIFT) , PGDIR_SIZE);
-
-	for (pgd_idx = 0; pgd_idx < nr_pgds; pgd_idx++)
-		set_pgd(pgd_offset_k(pgd_idx * PGDIR_SIZE), save_pgd[pgd_idx]);
-
+	for (pgd = 0; pgd < n_pgds; pgd++)
+		set_pgd(pgd_offset_k(pgd * PGDIR_SIZE), save_pgd[pgd]);
 	kfree(save_pgd);
-
 	__flush_tlb_all();
+	local_irq_restore(efi_flags);
 	early_code_mapping_set_exec(0);
 }
 
@@ -348,7 +345,6 @@ extern efi_status_t efi64_thunk(u32, ...);
 									\
 	efi_sync_low_kernel_mappings();					\
 	local_irq_save(flags);						\
-	firmware_restrict_branch_speculation_start();			\
 									\
 	efi_scratch.prev_cr3 = read_cr3();				\
 	write_cr3((unsigned long)efi_scratch.efi_pgt);			\
@@ -359,7 +355,6 @@ extern efi_status_t efi64_thunk(u32, ...);
 									\
 	write_cr3(efi_scratch.prev_cr3);				\
 	__flush_tlb_all();						\
-	firmware_restrict_branch_speculation_end();			\
 	local_irq_restore(flags);					\
 									\
 	__s;								\

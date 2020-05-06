@@ -274,86 +274,6 @@ static int can_get_bittiming(struct net_device *dev, struct can_bittiming *bt,
 	return err;
 }
 
-static void can_update_state_error_stats(struct net_device *dev,
-					 enum can_state new_state)
-{
-	struct can_priv *priv = netdev_priv(dev);
-
-	if (new_state <= priv->state)
-		return;
-
-	switch (new_state) {
-	case CAN_STATE_ERROR_WARNING:
-		priv->can_stats.error_warning++;
-		break;
-	case CAN_STATE_ERROR_PASSIVE:
-		priv->can_stats.error_passive++;
-		break;
-	case CAN_STATE_BUS_OFF:
-		priv->can_stats.bus_off++;
-		break;
-	default:
-		break;
-	}
-}
-
-static int can_tx_state_to_frame(struct net_device *dev, enum can_state state)
-{
-	switch (state) {
-	case CAN_STATE_ERROR_ACTIVE:
-		return CAN_ERR_CRTL_ACTIVE;
-	case CAN_STATE_ERROR_WARNING:
-		return CAN_ERR_CRTL_TX_WARNING;
-	case CAN_STATE_ERROR_PASSIVE:
-		return CAN_ERR_CRTL_TX_PASSIVE;
-	default:
-		return 0;
-	}
-}
-
-static int can_rx_state_to_frame(struct net_device *dev, enum can_state state)
-{
-	switch (state) {
-	case CAN_STATE_ERROR_ACTIVE:
-		return CAN_ERR_CRTL_ACTIVE;
-	case CAN_STATE_ERROR_WARNING:
-		return CAN_ERR_CRTL_RX_WARNING;
-	case CAN_STATE_ERROR_PASSIVE:
-		return CAN_ERR_CRTL_RX_PASSIVE;
-	default:
-		return 0;
-	}
-}
-
-void can_change_state(struct net_device *dev, struct can_frame *cf,
-		      enum can_state tx_state, enum can_state rx_state)
-{
-	struct can_priv *priv = netdev_priv(dev);
-	enum can_state new_state = max(tx_state, rx_state);
-
-	if (unlikely(new_state == priv->state)) {
-		netdev_warn(dev, "%s: oops, state did not change", __func__);
-		return;
-	}
-
-	netdev_dbg(dev, "New error state: %d\n", new_state);
-
-	can_update_state_error_stats(dev, new_state);
-	priv->state = new_state;
-
-	if (unlikely(new_state == CAN_STATE_BUS_OFF)) {
-		cf->can_id |= CAN_ERR_BUSOFF;
-		return;
-	}
-
-	cf->can_id |= CAN_ERR_CRTL;
-	cf->data[1] |= tx_state >= rx_state ?
-		       can_tx_state_to_frame(dev, tx_state) : 0;
-	cf->data[1] |= tx_state <= rx_state ?
-		       can_rx_state_to_frame(dev, rx_state) : 0;
-}
-EXPORT_SYMBOL_GPL(can_change_state);
-
 /*
  * Local echo of CAN messages
  *
@@ -572,9 +492,10 @@ void can_bus_off(struct net_device *dev)
 {
 	struct can_priv *priv = netdev_priv(dev);
 
-	netdev_dbg(dev, "bus-off\n");
+	netdev_info(dev, "bus-off\n");
 
 	netif_carrier_off(dev);
+	priv->can_stats.bus_off++;
 
 	if (priv->restart_ms)
 		schedule_delayed_work(&priv->restart_work,
@@ -614,7 +535,6 @@ struct sk_buff *alloc_can_skb(struct net_device *dev, struct can_frame **cf)
 
 	can_skb_reserve(skb);
 	can_skb_prv(skb)->ifindex = dev->ifindex;
-	can_skb_prv(skb)->skbcnt = 0;
 
 	*cf = (struct can_frame *)skb_put(skb, sizeof(struct can_frame));
 	memset(*cf, 0, sizeof(struct can_frame));
@@ -643,7 +563,6 @@ struct sk_buff *alloc_canfd_skb(struct net_device *dev,
 
 	can_skb_reserve(skb);
 	can_skb_prv(skb)->ifindex = dev->ifindex;
-	can_skb_prv(skb)->skbcnt = 0;
 
 	*cfd = (struct canfd_frame *)skb_put(skb, sizeof(struct canfd_frame));
 	memset(*cfd, 0, sizeof(struct canfd_frame));
@@ -993,7 +912,7 @@ static int can_fill_info(struct sk_buff *skb, const struct net_device *dev)
 	     nla_put(skb, IFLA_CAN_BITTIMING_CONST,
 		     sizeof(*priv->bittiming_const), priv->bittiming_const)) ||
 
-	    nla_put(skb, IFLA_CAN_CLOCK, sizeof(priv->clock), &priv->clock) ||
+	    nla_put(skb, IFLA_CAN_CLOCK, sizeof(cm), &priv->clock) ||
 	    nla_put_u32(skb, IFLA_CAN_STATE, state) ||
 	    nla_put(skb, IFLA_CAN_CTRLMODE, sizeof(cm), &cm) ||
 	    nla_put_u32(skb, IFLA_CAN_RESTART_MS, priv->restart_ms) ||
@@ -1065,8 +984,6 @@ static struct rtnl_link_ops can_link_ops __read_mostly = {
 int register_candev(struct net_device *dev)
 {
 	dev->rtnl_link_ops = &can_link_ops;
-	netif_carrier_off(dev);
-
 	return register_netdev(dev);
 }
 EXPORT_SYMBOL_GPL(register_candev);

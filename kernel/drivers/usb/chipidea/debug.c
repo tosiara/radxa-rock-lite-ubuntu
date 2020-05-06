@@ -10,7 +10,6 @@
 #include <linux/usb/phy.h>
 #include <linux/usb/otg.h>
 #include <linux/usb/otg-fsm.h>
-#include <linux/usb/chipidea.h>
 
 #include "ci.h"
 #include "udc.h"
@@ -91,12 +90,8 @@ static ssize_t ci_port_test_write(struct file *file, const char __user *ubuf,
 	char buf[32];
 	int ret;
 
-	count = min_t(size_t, sizeof(buf) - 1, count);
-	if (copy_from_user(buf, ubuf, count))
+	if (copy_from_user(buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
 		return -EFAULT;
-
-	/* sscanf requires a zero terminated string */
-	buf[count] = '\0';
 
 	if (sscanf(buf, "%u", &mode) != 1)
 		return -EINVAL;
@@ -229,7 +224,7 @@ static int ci_otg_show(struct seq_file *s, void *unused)
 
 	/* ------ State ----- */
 	seq_printf(s, "OTG state: %s\n\n",
-			usb_otg_state_string(ci->otg.state));
+		usb_otg_state_string(ci->transceiver->state));
 
 	/* ------ State Machine Variables ----- */
 	seq_printf(s, "a_bus_drop: %d\n", fsm->a_bus_drop);
@@ -323,10 +318,8 @@ static ssize_t ci_role_write(struct file *file, const char __user *ubuf,
 		return -EINVAL;
 
 	pm_runtime_get_sync(ci->dev);
-	disable_irq(ci->irq);
 	ci_role_stop(ci);
 	ret = ci_role_start(ci, role);
-	enable_irq(ci->irq);
 	pm_runtime_put_sync(ci->dev);
 
 	return ret ? ret : count;
@@ -350,8 +343,8 @@ static int ci_registers_show(struct seq_file *s, void *unused)
 	struct ci_hdrc *ci = s->private;
 	u32 tmp_reg;
 
-	if (!ci || ci->in_lpm)
-		return -EPERM;
+	if (!ci)
+		return 0;
 
 	/* ------ Registers ----- */
 	tmp_reg = hw_read_intr_enable(ci);

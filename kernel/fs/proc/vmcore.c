@@ -165,16 +165,6 @@ int __weak remap_oldmem_pfn_range(struct vm_area_struct *vma,
 }
 
 /*
- * Architectures which support memory encryption override this.
- */
-ssize_t __weak
-copy_oldmem_page_encrypted(unsigned long pfn, char *buf, size_t csize,
-			   unsigned long offset, int userbuf)
-{
-	return copy_oldmem_page(pfn, buf, csize, offset, userbuf);
-}
-
-/*
  * Copy to either kernel or user space
  */
 static int copy_to(void *target, void *src, size_t size, int userbuf)
@@ -556,8 +546,8 @@ static int __init update_note_header_size_elf64(const Elf64_Ehdr *ehdr_ptr)
 		nhdr_ptr = notes_section;
 		while (nhdr_ptr->n_namesz != 0) {
 			sz = sizeof(Elf64_Nhdr) +
-				(((u64)nhdr_ptr->n_namesz + 3) & ~3) +
-				(((u64)nhdr_ptr->n_descsz + 3) & ~3);
+				((nhdr_ptr->n_namesz + 3) & ~3) +
+				((nhdr_ptr->n_descsz + 3) & ~3);
 			if ((real_sz + sz) > max_sz) {
 				pr_warn("Warning: Exceeded p_memsz, dropping PT_NOTE entry n_namesz=0x%x, n_descsz=0x%x\n",
 					nhdr_ptr->n_namesz, nhdr_ptr->n_descsz);
@@ -742,8 +732,8 @@ static int __init update_note_header_size_elf32(const Elf32_Ehdr *ehdr_ptr)
 		nhdr_ptr = notes_section;
 		while (nhdr_ptr->n_namesz != 0) {
 			sz = sizeof(Elf32_Nhdr) +
-				(((u64)nhdr_ptr->n_namesz + 3) & ~3) +
-				(((u64)nhdr_ptr->n_descsz + 3) & ~3);
+				((nhdr_ptr->n_namesz + 3) & ~3) +
+				((nhdr_ptr->n_descsz + 3) & ~3);
 			if ((real_sz + sz) > max_sz) {
 				pr_warn("Warning: Exceeded p_memsz, dropping PT_NOTE entry n_namesz=0x%x, n_descsz=0x%x\n",
 					nhdr_ptr->n_namesz, nhdr_ptr->n_descsz);

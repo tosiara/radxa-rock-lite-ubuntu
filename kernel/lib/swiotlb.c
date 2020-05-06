@@ -31,10 +31,10 @@
 #include <linux/ctype.h>
 #include <linux/highmem.h>
 #include <linux/gfp.h>
-#include <linux/scatterlist.h>
 
 #include <asm/io.h>
 #include <asm/dma.h>
+#include <asm/scatterlist.h>
 
 #include <linux/init.h>
 #include <linux/bootmem.h>
@@ -450,11 +450,11 @@ phys_addr_t swiotlb_tbl_map_single(struct device *hwdev,
 		    : 1UL << (BITS_PER_LONG - IO_TLB_SHIFT);
 
 	/*
-	 * For mappings greater than or equal to a page, we limit the stride
-	 * (and hence alignment) to a page size.
+	 * For mappings greater than a page, we limit the stride (and
+	 * hence alignment) to a page size.
 	 */
 	nslots = ALIGN(size, 1 << IO_TLB_SHIFT) >> IO_TLB_SHIFT;
-	if (size >= PAGE_SIZE)
+	if (size > PAGE_SIZE)
 		stride = (1 << (PAGE_SHIFT - IO_TLB_SHIFT));
 	else
 		stride = 1;
@@ -535,9 +535,8 @@ EXPORT_SYMBOL_GPL(swiotlb_tbl_map_single);
  * Allocates bounce buffer and returns its kernel virtual address.
  */
 
-static phys_addr_t
-map_single(struct device *hwdev, phys_addr_t phys, size_t size,
-	   enum dma_data_direction dir)
+phys_addr_t map_single(struct device *hwdev, phys_addr_t phys, size_t size,
+		       enum dma_data_direction dir)
 {
 	dma_addr_t start_dma_addr = phys_to_dma(hwdev, io_tlb_start);
 
@@ -654,7 +653,7 @@ swiotlb_alloc_coherent(struct device *hwdev, size_t size,
 		 */
 		phys_addr_t paddr = map_single(hwdev, 0, size, DMA_FROM_DEVICE);
 		if (paddr == SWIOTLB_MAP_ERROR)
-			goto err_warn;
+			return NULL;
 
 		ret = phys_to_virt(paddr);
 		dev_addr = phys_to_dma(hwdev, paddr);
@@ -668,7 +667,7 @@ swiotlb_alloc_coherent(struct device *hwdev, size_t size,
 			/* DMA_TO_DEVICE to avoid memcpy in unmap_single */
 			swiotlb_tbl_unmap_single(hwdev, paddr,
 						 size, DMA_TO_DEVICE);
-			goto err_warn;
+			return NULL;
 		}
 	}
 
@@ -676,13 +675,6 @@ swiotlb_alloc_coherent(struct device *hwdev, size_t size,
 	memset(ret, 0, size);
 
 	return ret;
-
-err_warn:
-	pr_warn("coherent allocation failed for device %s size=%zu\n",
-		dev_name(hwdev), size);
-	dump_stack();
-
-	return NULL;
 }
 EXPORT_SYMBOL(swiotlb_alloc_coherent);
 

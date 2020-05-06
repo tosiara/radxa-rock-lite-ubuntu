@@ -1,9 +1,6 @@
 #ifndef _LINUX_LIST_NULLS_H
 #define _LINUX_LIST_NULLS_H
 
-#include <linux/poison.h>
-#include <linux/const.h>
-
 /*
  * Special version of lists, where end of list is not a NULL pointer,
  * but a 'nulls' marker, which can have many different values.
@@ -24,9 +21,8 @@ struct hlist_nulls_head {
 struct hlist_nulls_node {
 	struct hlist_nulls_node *next, **pprev;
 };
-#define NULLS_MARKER(value) (1UL | (((long)value) << 1))
 #define INIT_HLIST_NULLS_HEAD(ptr, nulls) \
-	((ptr)->first = (struct hlist_nulls_node *) NULLS_MARKER(nulls))
+	((ptr)->first = (struct hlist_nulls_node *) (1UL | (((long)nulls) << 1)))
 
 #define hlist_nulls_entry(ptr, type, member) container_of(ptr,type,member)
 /**
@@ -66,26 +62,25 @@ static inline void hlist_nulls_add_head(struct hlist_nulls_node *n,
 	struct hlist_nulls_node *first = h->first;
 
 	n->next = first;
-	WRITE_ONCE(n->pprev, &h->first);
+	n->pprev = &h->first;
 	h->first = n;
 	if (!is_a_nulls(first))
-		WRITE_ONCE(first->pprev, &n->next);
+		first->pprev = &n->next;
 }
 
 static inline void __hlist_nulls_del(struct hlist_nulls_node *n)
 {
 	struct hlist_nulls_node *next = n->next;
 	struct hlist_nulls_node **pprev = n->pprev;
-
-	WRITE_ONCE(*pprev, next);
+	*pprev = next;
 	if (!is_a_nulls(next))
-		WRITE_ONCE(next->pprev, pprev);
+		next->pprev = pprev;
 }
 
 static inline void hlist_nulls_del(struct hlist_nulls_node *n)
 {
 	__hlist_nulls_del(n);
-	WRITE_ONCE(n->pprev, LIST_POISON2);
+	n->pprev = LIST_POISON2;
 }
 
 /**

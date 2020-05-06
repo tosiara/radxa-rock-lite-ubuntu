@@ -604,7 +604,8 @@ spider_net_set_multi(struct net_device *netdev)
 	int i;
 	u32 reg;
 	struct spider_net_card *card = netdev_priv(netdev);
-	DECLARE_BITMAP(bitmask, SPIDER_NET_MULTICAST_HASHES) = {};
+	unsigned long bitmask[SPIDER_NET_MULTICAST_HASHES / BITS_PER_LONG] =
+		{0, };
 
 	spider_net_set_promisc(card);
 
@@ -881,9 +882,9 @@ out:
  * @skb: packet to send out
  * @netdev: interface device structure
  *
- * returns NETDEV_TX_OK on success, NETDEV_TX_BUSY on failure
+ * returns 0 on success, !0 on failure
  */
-static netdev_tx_t
+static int
 spider_net_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	int cnt;

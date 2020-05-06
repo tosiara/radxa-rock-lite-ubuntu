@@ -137,7 +137,8 @@ static void __ldsem_wake_readers(struct ld_semaphore *sem)
 
 	list_for_each_entry_safe(waiter, next, &sem->read_wait, list) {
 		tsk = waiter->task;
-		smp_store_release(&waiter->task, NULL);
+		smp_mb();
+		waiter->task = NULL;
 		wake_up_process(tsk);
 		put_task_struct(tsk);
 	}
@@ -233,7 +234,7 @@ down_read_failed(struct ld_semaphore *sem, long count, long timeout)
 	for (;;) {
 		set_task_state(tsk, TASK_UNINTERRUPTIBLE);
 
-		if (!smp_load_acquire(&waiter.task))
+		if (!waiter.task)
 			break;
 		if (!timeout)
 			break;
@@ -298,8 +299,7 @@ down_write_failed(struct ld_semaphore *sem, long count, long timeout)
 		timeout = schedule_timeout(timeout);
 		raw_spin_lock_irq(&sem->wait_lock);
 		set_task_state(tsk, TASK_UNINTERRUPTIBLE);
-		locked = writer_trylock(sem);
-		if (locked)
+		if ((locked = writer_trylock(sem)))
 			break;
 	}
 

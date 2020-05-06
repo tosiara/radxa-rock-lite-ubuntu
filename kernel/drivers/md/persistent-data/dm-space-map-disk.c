@@ -78,9 +78,7 @@ static int sm_disk_count_is_more_than_one(struct dm_space_map *sm, dm_block_t b,
 	if (r)
 		return r;
 
-	*result = count > 1;
-
-	return 0;
+	return count > 1;
 }
 
 static int sm_disk_set_count(struct dm_space_map *sm, dm_block_t b,
@@ -167,10 +165,8 @@ static int sm_disk_new_block(struct dm_space_map *sm, dm_block_t *b)
 	enum allocation_event ev;
 	struct sm_disk *smd = container_of(sm, struct sm_disk, sm);
 
-	/*
-	 * Any block we allocate has to be free in both the old and current ll.
-	 */
-	r = sm_ll_find_common_free_block(&smd->old_ll, &smd->ll, smd->begin, smd->ll.nr_blocks, b);
+	/* FIXME: we should loop round a couple of times */
+	r = sm_ll_find_free_block(&smd->old_ll, smd->begin, smd->old_ll.nr_blocks, b);
 	if (r)
 		return r;
 

@@ -1106,7 +1106,7 @@ static void lance_tx_timeout(struct net_device *dev)
 	netif_wake_queue(dev);
 }
 
-static netdev_tx_t lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static int lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct lance_private *lp = netdev_priv(dev);
 	int entry, skblen, len;
@@ -1526,6 +1526,7 @@ MODULE_DEVICE_TABLE(of, sunlance_sbus_match);
 static struct platform_driver sunlance_sbus_driver = {
 	.driver = {
 		.name = "sunlance",
+		.owner = THIS_MODULE,
 		.of_match_table = sunlance_sbus_match,
 	},
 	.probe		= sunlance_sbus_probe,

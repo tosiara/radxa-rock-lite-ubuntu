@@ -278,7 +278,7 @@ err:
 	goto out;
 }
 
-static void btree_node_read_endio(struct bio *bio)
+static void btree_node_read_endio(struct bio *bio, int error)
 {
 	struct closure *cl = bio->bi_private;
 	closure_put(cl);
@@ -305,7 +305,7 @@ static void bch_btree_node_read(struct btree *b)
 	bch_submit_bbio(bio, b->c, &b->key, 0);
 	closure_sync(&cl);
 
-	if (bio->bi_error)
+	if (!test_bit(BIO_UPTODATE, &bio->bi_flags))
 		set_btree_node_io_error(b);
 
 	bch_bbio_free(bio, b->c);
@@ -371,15 +371,15 @@ static void btree_node_write_done(struct closure *cl)
 	__btree_node_write_done(cl);
 }
 
-static void btree_node_write_endio(struct bio *bio)
+static void btree_node_write_endio(struct bio *bio, int error)
 {
 	struct closure *cl = bio->bi_private;
 	struct btree *b = container_of(cl, struct btree, io);
 
-	if (bio->bi_error)
+	if (error)
 		set_btree_node_io_error(b);
 
-	bch_bbio_count_io_errors(b->c, bio, bio->bi_error, "writing btree");
+	bch_bbio_count_io_errors(b->c, bio, error, "writing btree");
 	closure_put(cl);
 }
 
@@ -686,8 +686,6 @@ static unsigned long bch_mca_scan(struct shrinker *shrink,
 	 * IO can always make forward progress:
 	 */
 	nr /= c->btree_pages;
-	if (nr == 0)
-		nr = 1;
 	nr = min_t(unsigned long, nr, mca_can_free(c));
 
 	i = 0;
@@ -1767,34 +1765,33 @@ static void bch_btree_gc(struct cache_set *c)
 	bch_moving_gc(c);
 }
 
-static bool gc_should_run(struct cache_set *c)
-{
-	struct cache *ca;
-	unsigned i;
-
-	for_each_cache(ca, c, i)
-		if (ca->invalidate_needs_gc)
-			return true;
-
-	if (atomic_read(&c->sectors_to_gc) < 0)
-		return true;
-
-	return false;
-}
-
 static int bch_gc_thread(void *arg)
 {
 	struct cache_set *c = arg;
+	struct cache *ca;
+	unsigned i;
 
 	while (1) {
-		wait_event_interruptible(c->gc_wait,
-			   kthread_should_stop() || gc_should_run(c));
+again:
+		bch_btree_gc(c);
 
+		set_current_state(TASK_INTERRUPTIBLE);
 		if (kthread_should_stop())
 			break;
 
-		set_gc_sectors(c);
-		bch_btree_gc(c);
+		mutex_lock(&c->bucket_lock);
+
+		for_each_cache(ca, c, i)
+			if (ca->invalidate_needs_gc) {
+				mutex_unlock(&c->bucket_lock);
+				set_current_state(TASK_RUNNING);
+				goto again;
+			}
+
+		mutex_unlock(&c->bucket_lock);
+
+		try_to_freeze();
+		schedule();
 	}
 
 	return 0;
@@ -1802,10 +1799,11 @@ static int bch_gc_thread(void *arg)
 
 int bch_gc_thread_start(struct cache_set *c)
 {
-	c->gc_thread = kthread_run(bch_gc_thread, c, "bcache_gc");
+	c->gc_thread = kthread_create(bch_gc_thread, c, "bcache_gc");
 	if (IS_ERR(c->gc_thread))
 		return PTR_ERR(c->gc_thread);
 
+	set_task_state(c->gc_thread, TASK_INTERRUPTIBLE);
 	return 0;
 }
 

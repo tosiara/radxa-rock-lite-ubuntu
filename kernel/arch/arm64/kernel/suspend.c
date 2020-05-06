@@ -1,9 +1,8 @@
 #include <linux/ftrace.h>
 #include <linux/percpu.h>
 #include <linux/slab.h>
-#include <asm/alternative.h>
 #include <asm/cacheflush.h>
-#include <asm/cpufeature.h>
+#include <asm/cpu_ops.h>
 #include <asm/debug-monitors.h>
 #include <asm/pgtable.h>
 #include <asm/memory.h>
@@ -44,7 +43,7 @@ void notrace __cpu_suspend_save(struct cpu_suspend_ctx *ptr,
  * time the notifier runs debug exceptions might have been enabled already,
  * with HW breakpoints registers content still in an unknown state.
  */
-static void (*hw_breakpoint_restore)(void *);
+void (*hw_breakpoint_restore)(void *);
 void __init cpu_suspend_set_dbg_restorer(void (*hw_bp_restore)(void *))
 {
 	/* Prevent multiple restore hook initializations */
@@ -53,14 +52,34 @@ void __init cpu_suspend_set_dbg_restorer(void (*hw_bp_restore)(void *))
 	hw_breakpoint_restore = hw_bp_restore;
 }
 
+/**
+ * cpu_suspend() - function to enter a low-power state
+ * @arg: argument to pass to CPU suspend operations
+ *
+ * Return: 0 on success, -EOPNOTSUPP if CPU suspend hook not initialized, CPU
+ * operations back-end error code otherwise.
+ */
+int cpu_suspend(unsigned long arg)
+{
+	int cpu = smp_processor_id();
+
+	/*
+	 * If cpu_ops have not been registered or suspend
+	 * has not been initialized, cpu_suspend call fails early.
+	 */
+	if (!cpu_ops[cpu] || !cpu_ops[cpu]->cpu_suspend)
+		return -EOPNOTSUPP;
+	return cpu_ops[cpu]->cpu_suspend(arg);
+}
+
 /*
- * cpu_suspend
+ * __cpu_suspend
  *
  * arg: argument to pass to the finisher function
  * fn: finisher function pointer
  *
  */
-int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
+int __cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 {
 	struct mm_struct *mm = current->active_mm;
 	int ret;
@@ -90,34 +109,23 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 	if (ret == 0) {
 		/*
 		 * We are resuming from reset with TTBR0_EL1 set to the
-		 * idmap to enable the MMU; set the TTBR0 to the reserved
-		 * page tables to prevent speculative TLB allocations, flush
-		 * the local tlb and set the default tcr_el1.t0sz so that
-		 * the TTBR0 address space set-up is properly restored.
-		 * If the current active_mm != &init_mm we entered cpu_suspend
-		 * with mappings in TTBR0 that must be restored, so we switch
-		 * them back to complete the address space configuration
-		 * restoration before returning.
+		 * idmap to enable the MMU; restore the active_mm mappings in
+		 * TTBR0_EL1 unless the active_mm == &init_mm, in which case
+		 * the thread entered __cpu_suspend with TTBR0_EL1 set to
+		 * reserved TTBR0 page tables and should be restored as such.
 		 */
-		cpu_set_reserved_ttbr0();
-		local_flush_tlb_all();
-		cpu_set_default_tcr_t0sz();
-
-		if (mm != &init_mm)
+		if (mm == &init_mm)
+			cpu_set_reserved_ttbr0();
+		else
 			cpu_switch_mm(mm->pgd, mm);
+
+		flush_tlb_all();
 
 		/*
 		 * Restore per-cpu offset before any kernel
 		 * subsystem relying on it has a chance to run.
 		 */
 		set_my_cpu_offset(per_cpu_offset(smp_processor_id()));
-
-		/*
-		 * PSTATE was not saved over suspend/resume, re-enable any
-		 * detected features that might not have been set correctly.
-		 */
-		asm(ALTERNATIVE("nop", SET_PSTATE_PAN(1), ARM64_HAS_PAN,
-				CONFIG_ARM64_PAN));
 
 		/*
 		 * Restore HW breakpoint registers to sane values
@@ -141,6 +149,7 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 }
 
 struct sleep_save_sp sleep_save_sp;
+phys_addr_t sleep_idmap_phys;
 
 static int __init cpu_suspend_init(void)
 {
@@ -154,7 +163,9 @@ static int __init cpu_suspend_init(void)
 
 	sleep_save_sp.save_ptr_stash = ctx_ptr;
 	sleep_save_sp.save_ptr_stash_phys = virt_to_phys(ctx_ptr);
+	sleep_idmap_phys = virt_to_phys(idmap_pg_dir);
 	__flush_dcache_area(&sleep_save_sp, sizeof(struct sleep_save_sp));
+	__flush_dcache_area(&sleep_idmap_phys, sizeof(sleep_idmap_phys));
 
 	return 0;
 }

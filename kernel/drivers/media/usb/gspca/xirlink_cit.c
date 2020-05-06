@@ -1455,9 +1455,6 @@ static int cit_get_packet_size(struct gspca_dev *gspca_dev)
 		return -EIO;
 	}
 
-	if (alt->desc.bNumEndpoints < 1)
-		return -ENODEV;
-
 	return le16_to_cpu(alt->endpoint[0].desc.wMaxPacketSize);
 }
 
@@ -1775,8 +1772,7 @@ static int cit_start_model2(struct gspca_dev *gspca_dev)
 		cit_write_reg(gspca_dev, 0x0070, 0x0119);	/* All except 176x144 */
 		sd->sof_len = 2;
 		break;
-#if 0
-	case VIDEOSIZE_352x240:
+	/* case VIDEOSIZE_352x240: */
 		cit_write_reg(gspca_dev, 0x002c, 0x0103);	/* All except 320x240 */
 		cit_write_reg(gspca_dev, 0x0000, 0x0104);	/* Same */
 		cit_write_reg(gspca_dev, 0x001e, 0x0105);	/* 320x240, 352x240 */
@@ -1784,7 +1780,6 @@ static int cit_start_model2(struct gspca_dev *gspca_dev)
 		cit_write_reg(gspca_dev, 0x0070, 0x0119);	/* All except 176x144 */
 		sd->sof_len = 2;
 		break;
-#endif
 	case 352: /* 352x288 */
 		cit_write_reg(gspca_dev, 0x002c, 0x0103);	/* All except 320x240 */
 		cit_write_reg(gspca_dev, 0x0000, 0x0104);	/* Same */
@@ -1858,15 +1853,13 @@ static int cit_start_model2(struct gspca_dev *gspca_dev)
 		cit_model2_Packet1(gspca_dev, 0x0018, 0x0044); /* Another hardware setting */
 		clock_div = 8;
 		break;
-#if 0
-	case VIDEOSIZE_352x240:
+	/* case VIDEOSIZE_352x240: */
 		/* This mode doesn't work as Windows programs it; changed to work */
 		cit_model2_Packet1(gspca_dev, 0x0014, 0x0009); /* Windows sets this to 8 */
 		cit_model2_Packet1(gspca_dev, 0x0016, 0x0003); /* Horizontal shift */
 		cit_model2_Packet1(gspca_dev, 0x0018, 0x0044); /* Windows sets this to 0x0045 */
 		clock_div = 10;
 		break;
-#endif
 	case 352: /* 352x288 */
 		cit_model2_Packet1(gspca_dev, 0x0014, 0x0003);
 		cit_model2_Packet1(gspca_dev, 0x0016, 0x0002); /* Horizontal shift */
@@ -1913,11 +1906,9 @@ static int cit_start_model2(struct gspca_dev *gspca_dev)
 	case 320: /* 320x240 */
 		cit_model2_Packet1(gspca_dev, 0x0026, 0x0044);
 		break;
-#if 0
-	case VIDEOSIZE_352x240:
+	/* case VIDEOSIZE_352x240: */
 		cit_model2_Packet1(gspca_dev, 0x0026, 0x0046);
 		break;
-#endif
 	case 352: /* 352x288 */
 		cit_model2_Packet1(gspca_dev, 0x0026, 0x0048);
 		break;
@@ -2641,7 +2632,6 @@ static int sd_start(struct gspca_dev *gspca_dev)
 
 static int sd_isoc_init(struct gspca_dev *gspca_dev)
 {
-	struct usb_interface_cache *intfc;
 	struct usb_host_interface *alt;
 	int max_packet_size;
 
@@ -2657,17 +2647,8 @@ static int sd_isoc_init(struct gspca_dev *gspca_dev)
 		break;
 	}
 
-	intfc = gspca_dev->dev->actconfig->intf_cache[0];
-
-	if (intfc->num_altsetting < 2)
-		return -ENODEV;
-
-	alt = &intfc->altsetting[1];
-
-	if (alt->desc.bNumEndpoints < 1)
-		return -ENODEV;
-
 	/* Start isoc bandwidth "negotiation" at max isoc bandwidth */
+	alt = &gspca_dev->dev->actconfig->intf_cache[0]->altsetting[1];
 	alt->endpoint[0].desc.wMaxPacketSize = cpu_to_le16(max_packet_size);
 
 	return 0;
@@ -2690,9 +2671,6 @@ static int sd_isoc_nego(struct gspca_dev *gspca_dev)
 		break;
 	}
 
-	/*
-	 * Existence of altsetting and endpoint was verified in sd_isoc_init()
-	 */
 	alt = &gspca_dev->dev->actconfig->intf_cache[0]->altsetting[1];
 	packet_size = le16_to_cpu(alt->endpoint[0].desc.wMaxPacketSize);
 	if (packet_size <= min_packet_size)

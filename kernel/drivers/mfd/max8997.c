@@ -55,7 +55,6 @@ static const struct of_device_id max8997_pmic_dt_match[] = {
 	{ .compatible = "maxim,max8997-pmic", .data = (void *)TYPE_MAX8997 },
 	{},
 };
-MODULE_DEVICE_TABLE(of, max8997_pmic_dt_match);
 #endif
 
 int max8997_read_reg(struct i2c_client *i2c, u8 reg, u8 *dest)
@@ -156,6 +155,12 @@ static struct max8997_platform_data *max8997_i2c_parse_dt_pdata(
 
 	pd->ono = irq_of_parse_and_map(dev->of_node, 1);
 
+	/*
+	 * ToDo: the 'wakeup' member in the platform data is more of a linux
+	 * specfic information. Hence, there is no binding for that yet and
+	 * not parsed here.
+	 */
+
 	return pd;
 }
 
@@ -243,7 +248,7 @@ static int max8997_i2c_probe(struct i2c_client *i2c,
 	 */
 
 	/* MAX8997 has a power button input. */
-	device_init_wakeup(max8997->dev, true);
+	device_init_wakeup(max8997->dev, pdata->wakeup);
 
 	return ret;
 
@@ -503,6 +508,7 @@ static const struct dev_pm_ops max8997_pm = {
 static struct i2c_driver max8997_i2c_driver = {
 	.driver = {
 		   .name = "max8997",
+		   .owner = THIS_MODULE,
 		   .pm = &max8997_pm,
 		   .of_match_table = of_match_ptr(max8997_pmic_dt_match),
 	},

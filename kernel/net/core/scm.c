@@ -135,7 +135,8 @@ int __scm_send(struct socket *sock, struct msghdr *msg, struct scm_cookie *p)
 	struct cmsghdr *cmsg;
 	int err;
 
-	for_each_cmsghdr(cmsg, msg) {
+	for (cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg))
+	{
 		err = -EINVAL;
 
 		/* Verify that cmsg_len is at least sizeof(struct cmsghdr) */

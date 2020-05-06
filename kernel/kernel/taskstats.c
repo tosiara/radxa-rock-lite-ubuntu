@@ -111,8 +111,13 @@ static int send_reply(struct sk_buff *skb, struct genl_info *info)
 {
 	struct genlmsghdr *genlhdr = nlmsg_data(nlmsg_hdr(skb));
 	void *reply = genlmsg_data(genlhdr);
+	int rc;
 
-	genlmsg_end(skb, reply);
+	rc = genlmsg_end(skb, reply);
+	if (rc < 0) {
+		nlmsg_free(skb);
+		return rc;
+	}
 
 	return genlmsg_reply(skb, info);
 }
@@ -129,7 +134,11 @@ static void send_cpu_listeners(struct sk_buff *skb,
 	void *reply = genlmsg_data(genlhdr);
 	int rc, delcount = 0;
 
-	genlmsg_end(skb, reply);
+	rc = genlmsg_end(skb, reply);
+	if (rc < 0) {
+		nlmsg_free(skb);
+		return;
+	}
 
 	rc = 0;
 	down_read(&listeners->sem);
@@ -450,7 +459,7 @@ static int cgroupstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 	stats = nla_data(na);
 	memset(stats, 0, sizeof(*stats));
 
-	rc = cgroupstats_build(stats, f.file->f_path.dentry);
+	rc = cgroupstats_build(stats, f.file->f_dentry);
 	if (rc < 0) {
 		nlmsg_free(rep_skb);
 		goto err;
@@ -582,33 +591,25 @@ static int taskstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 static struct taskstats *taskstats_tgid_alloc(struct task_struct *tsk)
 {
 	struct signal_struct *sig = tsk->signal;
-	struct taskstats *stats_new, *stats;
+	struct taskstats *stats;
 
-	/* Pairs with smp_store_release() below. */
-	stats = smp_load_acquire(&sig->stats);
-	if (stats || thread_group_empty(tsk))
-		return stats;
+	if (sig->stats || thread_group_empty(tsk))
+		goto ret;
 
 	/* No problem if kmem_cache_zalloc() fails */
-	stats_new = kmem_cache_zalloc(taskstats_cache, GFP_KERNEL);
+	stats = kmem_cache_zalloc(taskstats_cache, GFP_KERNEL);
 
 	spin_lock_irq(&tsk->sighand->siglock);
-	stats = sig->stats;
-	if (!stats) {
-		/*
-		 * Pairs with smp_store_release() above and order the
-		 * kmem_cache_zalloc().
-		 */
-		smp_store_release(&sig->stats, stats_new);
-		stats = stats_new;
-		stats_new = NULL;
+	if (!sig->stats) {
+		sig->stats = stats;
+		stats = NULL;
 	}
 	spin_unlock_irq(&tsk->sighand->siglock);
 
-	if (stats_new)
-		kmem_cache_free(taskstats_cache, stats_new);
-
-	return stats;
+	if (stats)
+		kmem_cache_free(taskstats_cache, stats);
+ret:
+	return sig->stats;
 }
 
 /* Send pid data out on exit */

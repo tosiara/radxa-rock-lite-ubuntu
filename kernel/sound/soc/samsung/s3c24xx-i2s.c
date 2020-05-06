@@ -485,6 +485,7 @@ static struct platform_driver s3c24xx_iis_driver = {
 	.probe  = s3c24xx_iis_dev_probe,
 	.driver = {
 		.name = "s3c24xx-iis",
+		.owner = THIS_MODULE,
 	},
 };
 

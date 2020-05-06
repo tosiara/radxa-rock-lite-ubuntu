@@ -22,7 +22,7 @@
 #include <asm/cpu_device_id.h>
 #include <asm/byteorder.h>
 #include <asm/processor.h>
-#include <asm/fpu/api.h>
+#include <asm/i387.h>
 
 /*
  * Number of data blocks actually fetched for each xcrypt insn.
@@ -519,7 +519,7 @@ static int __init padlock_init(void)
 	if (!x86_match_cpu(padlock_cpu_id))
 		return -ENODEV;
 
-	if (!boot_cpu_has(X86_FEATURE_XCRYPT_EN)) {
+	if (!cpu_has_xcrypt_enabled) {
 		printk(KERN_NOTICE PFX "VIA PadLock detected, but not enabled. Hmm, strange...\n");
 		return -ENODEV;
 	}

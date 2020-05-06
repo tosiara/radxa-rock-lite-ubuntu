@@ -279,7 +279,7 @@ MODULE_PARM_DESC(pc104_3, "set interface types for ISA(PC104) board #3 (e.g. pc1
 module_param_array(pc104_4, ulong, NULL, 0);
 MODULE_PARM_DESC(pc104_4, "set interface types for ISA(PC104) board #4 (e.g. pc104_4=232,232,485,485,...");
 
-static int __init rp_init(void);
+static int rp_init(void);
 static void rp_cleanup_module(void);
 
 module_init(rp_init);
@@ -645,21 +645,18 @@ static void init_r_port(int board, int aiop, int chan, struct pci_dev *pci_dev)
 	info->port.ops = &rocket_port_ops;
 	init_completion(&info->close_wait);
 	info->flags &= ~ROCKET_MODE_MASK;
-	if (board < ARRAY_SIZE(pc104) && line < ARRAY_SIZE(pc104_1))
-		switch (pc104[board][line]) {
-		case 422:
-			info->flags |= ROCKET_MODE_RS422;
-			break;
-		case 485:
-			info->flags |= ROCKET_MODE_RS485;
-			break;
-		case 232:
-		default:
-			info->flags |= ROCKET_MODE_RS232;
-			break;
-		}
-	else
+	switch (pc104[board][line]) {
+	case 422:
+		info->flags |= ROCKET_MODE_RS422;
+		break;
+	case 485:
+		info->flags |= ROCKET_MODE_RS485;
+		break;
+	case 232:
+	default:
 		info->flags |= ROCKET_MODE_RS232;
+		break;
+	}
 
 	info->intmask = RXF_TRIG | TXFIFO_MT | SRC_INT | DELTA_CD | DELTA_CTS | DELTA_DSR;
 	if (sInitChan(ctlp, &info->channel, aiop, chan) == 0) {
@@ -898,6 +895,14 @@ static int rp_open(struct tty_struct *tty, struct file *filp)
 	if (!page)
 		return -ENOMEM;
 
+	if (port->flags & ASYNC_CLOSING) {
+		retval = wait_for_completion_interruptible(&info->close_wait);
+		free_page(page);
+		if (retval)
+			return retval;
+		return ((port->flags & ASYNC_HUP_NOTIFY) ? -EAGAIN : -ERESTARTSYS);
+	}
+
 	/*
 	 * We must not sleep from here until the port is marked fully in use.
 	 */
@@ -1052,6 +1057,7 @@ static void rp_close(struct tty_struct *tty, struct file *filp)
 	mutex_unlock(&port->mutex);
 	tty_port_tty_set(port, NULL);
 
+	wake_up_interruptible(&port->close_wait);
 	complete_all(&info->close_wait);
 	atomic_dec(&rp_num_ports_open);
 
@@ -1384,7 +1390,7 @@ static void rp_unthrottle(struct tty_struct *tty)
 	       tty->ldisc.chars_in_buffer(tty));
 #endif
 
-	if (rocket_paranoia_check(info, "rp_unthrottle"))
+	if (rocket_paranoia_check(info, "rp_throttle"))
 		return;
 
 	if (I_IXOFF(tty))
@@ -1452,7 +1458,7 @@ static void rp_wait_until_sent(struct tty_struct *tty, int timeout)
 
 	orig_jiffies = jiffies;
 #ifdef ROCKET_DEBUG_WAIT_UNTIL_SENT
-	printk(KERN_INFO "In %s(%d) (jiff=%lu)...\n", __func__, timeout,
+	printk(KERN_INFO "In RP_wait_until_sent(%d) (jiff=%lu)...\n", timeout,
 	       jiffies);
 	printk(KERN_INFO "cps=%d...\n", info->cps);
 #endif
@@ -1505,6 +1511,10 @@ static void rp_hangup(struct tty_struct *tty)
 #endif
 	rp_flush_buffer(tty);
 	spin_lock_irqsave(&info->port.lock, flags);
+	if (info->port.flags & ASYNC_CLOSING) {
+		spin_unlock_irqrestore(&info->port.lock, flags);
+		return;
+	}
 	if (info->port.count)
 		atomic_dec(&rp_num_ports_open);
 	clear_bit((info->aiop * 8) + info->chan, (void *) &xmit_flags[info->board]);

@@ -41,7 +41,8 @@
 #define BRCMS_FLUSH_TIMEOUT	500 /* msec */
 
 /* Flags we support */
-#define MAC_FILTERS (FIF_ALLMULTI | \
+#define MAC_FILTERS (FIF_PROMISC_IN_BSS | \
+	FIF_ALLMULTI | \
 	FIF_FCSFAIL | \
 	FIF_CONTROL | \
 	FIF_OTHER_BSS | \
@@ -98,7 +99,7 @@ static struct bcma_device_id brcms_coreid_table[] = {
 	BCMA_CORE(BCMA_MANUF_BCM, BCMA_CORE_80211, 17, BCMA_ANY_CLASS),
 	BCMA_CORE(BCMA_MANUF_BCM, BCMA_CORE_80211, 23, BCMA_ANY_CLASS),
 	BCMA_CORE(BCMA_MANUF_BCM, BCMA_CORE_80211, 24, BCMA_ANY_CLASS),
-	{},
+	BCMA_CORETABLE_END
 };
 MODULE_DEVICE_TABLE(bcma, brcms_coreid_table);
 
@@ -502,7 +503,6 @@ brcms_ops_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	}
 
 	spin_lock_bh(&wl->lock);
-	wl->wlc->vif = vif;
 	wl->mute_tx = false;
 	brcms_c_mute(wl->wlc, false);
 	if (vif->type == NL80211_IFTYPE_STATION)
@@ -520,11 +520,6 @@ brcms_ops_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 static void
 brcms_ops_remove_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 {
-	struct brcms_info *wl = hw->priv;
-
-	spin_lock_bh(&wl->lock);
-	wl->wlc->vif = NULL;
-	spin_unlock_bh(&wl->lock);
 }
 
 static int brcms_ops_config(struct ieee80211_hw *hw, u32 changed)
@@ -748,6 +743,8 @@ brcms_ops_configure_filter(struct ieee80211_hw *hw,
 	changed_flags &= MAC_FILTERS;
 	*total_flags &= MAC_FILTERS;
 
+	if (changed_flags & FIF_PROMISC_IN_BSS)
+		brcms_dbg_info(core, "FIF_PROMISC_IN_BSS\n");
 	if (changed_flags & FIF_ALLMULTI)
 		brcms_dbg_info(core, "FIF_ALLMULTI\n");
 	if (changed_flags & FIF_FCSFAIL)
@@ -767,9 +764,7 @@ brcms_ops_configure_filter(struct ieee80211_hw *hw,
 	return;
 }
 
-static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw,
-				    struct ieee80211_vif *vif,
-				    const u8 *mac_addr)
+static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw)
 {
 	struct brcms_info *wl = hw->priv;
 	spin_lock_bh(&wl->lock);
@@ -778,8 +773,7 @@ static void brcms_ops_sw_scan_start(struct ieee80211_hw *hw,
 	return;
 }
 
-static void brcms_ops_sw_scan_complete(struct ieee80211_hw *hw,
-				       struct ieee80211_vif *vif)
+static void brcms_ops_sw_scan_complete(struct ieee80211_hw *hw)
 {
 	struct brcms_info *wl = hw->priv;
 	spin_lock_bh(&wl->lock);
@@ -824,15 +818,13 @@ brcms_ops_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 static int
 brcms_ops_ampdu_action(struct ieee80211_hw *hw,
 		    struct ieee80211_vif *vif,
-		    struct ieee80211_ampdu_params *params)
+		    enum ieee80211_ampdu_mlme_action action,
+		    struct ieee80211_sta *sta, u16 tid, u16 *ssn,
+		    u8 buf_size)
 {
 	struct brcms_info *wl = hw->priv;
 	struct scb *scb = &wl->wlc->pri_scb;
 	int status;
-	struct ieee80211_sta *sta = params->sta;
-	enum ieee80211_ampdu_mlme_action action = params->action;
-	u16 tid = params->tid;
-	u8 buf_size = params->buf_size;
 
 	if (WARN_ON(scb->magic != SCB_MAGIC))
 		return -EIDRM;
@@ -846,8 +838,8 @@ brcms_ops_ampdu_action(struct ieee80211_hw *hw,
 		status = brcms_c_aggregatable(wl->wlc, tid);
 		spin_unlock_bh(&wl->lock);
 		if (!status) {
-			brcms_dbg_ht(wl->wlc->hw->d11core,
-				     "START: tid %d is not agg\'able\n", tid);
+			brcms_err(wl->wlc->hw->d11core,
+				  "START: tid %d is not agg\'able\n", tid);
 			return -EINVAL;
 		}
 		ieee80211_start_tx_ba_cb_irqsafe(vif, sta->addr, tid);
@@ -943,25 +935,6 @@ static void brcms_ops_set_tsf(struct ieee80211_hw *hw,
 	spin_unlock_bh(&wl->lock);
 }
 
-static int brcms_ops_beacon_set_tim(struct ieee80211_hw *hw,
-				 struct ieee80211_sta *sta, bool set)
-{
-	struct brcms_info *wl = hw->priv;
-	struct sk_buff *beacon = NULL;
-	u16 tim_offset = 0;
-
-	spin_lock_bh(&wl->lock);
-	if (wl->wlc->vif)
-		beacon = ieee80211_beacon_get_tim(hw, wl->wlc->vif,
-						  &tim_offset, NULL);
-	if (beacon)
-		brcms_c_set_new_beacon(wl->wlc, beacon, tim_offset,
-				       wl->wlc->vif->bss_conf.dtim_period);
-	spin_unlock_bh(&wl->lock);
-
-	return 0;
-}
-
 static const struct ieee80211_ops brcms_ops = {
 	.tx = brcms_ops_tx,
 	.start = brcms_ops_start,
@@ -980,7 +953,6 @@ static const struct ieee80211_ops brcms_ops = {
 	.flush = brcms_ops_flush,
 	.get_tsf = brcms_ops_get_tsf,
 	.set_tsf = brcms_ops_set_tsf,
-	.set_tim = brcms_ops_beacon_set_tim,
 };
 
 void brcms_dpc(unsigned long data)
@@ -1088,9 +1060,10 @@ static int ieee_hw_rate_init(struct ieee80211_hw *hw)
  */
 static int ieee_hw_init(struct ieee80211_hw *hw)
 {
-	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
-	ieee80211_hw_set(hw, SIGNAL_DBM);
-	ieee80211_hw_set(hw, REPORTS_TX_ACK_STATUS);
+	hw->flags = IEEE80211_HW_SIGNAL_DBM
+	    /* | IEEE80211_HW_CONNECTION_MONITOR  What is this? */
+	    | IEEE80211_HW_REPORTS_TX_ACK_STATUS
+	    | IEEE80211_HW_AMPDU_AGGREGATION;
 
 	hw->extra_tx_headroom = brcms_c_get_header_len();
 	hw->queues = N_TX_QUEUES;
@@ -1500,7 +1473,9 @@ struct brcms_timer *brcms_init_timer(struct brcms_info *wl,
 	wl->timers = t;
 
 #ifdef DEBUG
-	t->name = kstrdup(name, GFP_ATOMIC);
+	t->name = kmalloc(strlen(name) + 1, GFP_ATOMIC);
+	if (t->name)
+		strcpy(t->name, name);
 #endif
 
 	return t;

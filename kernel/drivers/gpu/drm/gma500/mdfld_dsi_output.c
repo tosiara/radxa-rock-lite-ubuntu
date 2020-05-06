@@ -290,7 +290,7 @@ static int mdfld_dsi_connector_set_property(struct drm_connector *connector,
 						encoder->crtc->primary->fb))
 					goto set_prop_error;
 			} else {
-				const struct drm_encoder_helper_funcs *funcs =
+				struct drm_encoder_helper_funcs *funcs =
 						encoder->helper_private;
 				funcs->mode_set(encoder,
 					&gma_crtc->saved_mode,
@@ -382,6 +382,16 @@ static int mdfld_dsi_connector_mode_valid(struct drm_connector *connector,
 	return MODE_OK;
 }
 
+static void mdfld_dsi_connector_dpms(struct drm_connector *connector, int mode)
+{
+	if (mode == connector->dpms)
+		return;
+
+	/*first, execute dpms*/
+
+	drm_helper_connector_dpms(connector, mode);
+}
+
 static struct drm_encoder *mdfld_dsi_connector_best_encoder(
 				struct drm_connector *connector)
 {
@@ -394,7 +404,7 @@ static struct drm_encoder *mdfld_dsi_connector_best_encoder(
 
 /*DSI connector funcs*/
 static const struct drm_connector_funcs mdfld_dsi_connector_funcs = {
-	.dpms = drm_helper_connector_dpms,
+	.dpms = /*drm_helper_connector_dpms*/mdfld_dsi_connector_dpms,
 	.save = mdfld_dsi_connector_save,
 	.restore = mdfld_dsi_connector_restore,
 	.detect = mdfld_dsi_connector_detect,

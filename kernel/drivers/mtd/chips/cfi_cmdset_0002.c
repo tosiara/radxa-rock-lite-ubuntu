@@ -1296,7 +1296,7 @@ static int do_otp_write(struct map_info *map, struct flchip *chip, loff_t adr,
 		unsigned long bus_ofs = adr & ~(map_bankwidth(map)-1);
 		int gap = adr - bus_ofs;
 		int n = min_t(int, len, map_bankwidth(map) - gap);
-		map_word datum = map_word_ff(map);
+		map_word datum;
 
 		if (n != map_bankwidth(map)) {
 			/* partial write of a word, load old contents */
@@ -1626,35 +1626,29 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip,
 			continue;
 		}
 
-		/*
-		 * We check "time_after" and "!chip_good" before checking
-		 * "chip_good" to avoid the failure due to scheduling.
-		 */
-		if (time_after(jiffies, timeo) && !chip_good(map, adr, datum)) {
+		if (time_after(jiffies, timeo) && !chip_ready(map, adr)){
 			xip_enable(map, chip, adr);
 			printk(KERN_WARNING "MTD %s(): software timeout\n", __func__);
 			xip_disable(map, chip, adr);
-			ret = -EIO;
 			break;
 		}
 
-		if (chip_good(map, adr, datum))
+		if (chip_ready(map, adr))
 			break;
 
 		/* Latency issues. Drop the lock, wait a while and retry */
 		UDELAY(map, chip, adr, 1);
 	}
-
 	/* Did we succeed? */
-	if (ret) {
+	if (!chip_good(map, adr, datum)) {
 		/* reset on all failures. */
 		map_write( map, CMD(0xF0), chip->start );
 		/* FIXME - should have reset delay before continuing */
 
-		if (++retry_cnt <= MAX_RETRIES) {
-			ret = 0;
+		if (++retry_cnt <= MAX_RETRIES)
 			goto retry;
-		}
+
+		ret = -EIO;
 	}
 	xip_enable(map, chip, adr);
  op_done:
@@ -1881,11 +1875,7 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 			continue;
 		}
 
-		/*
-		 * We check "time_after" and "!chip_good" before checking "chip_good" to avoid
-		 * the failure due to scheduling.
-		 */
-		if (time_after(jiffies, timeo) && !chip_good(map, adr, datum))
+		if (time_after(jiffies, timeo) && !chip_ready(map, adr))
 			break;
 
 		if (chip_good(map, adr, datum)) {

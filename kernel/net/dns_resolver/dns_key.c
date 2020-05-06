@@ -127,7 +127,7 @@ dns_resolver_preparse(struct key_preparsed_payload *prep)
 					goto bad_option_value;
 
 				kdebug("dns error no. = %lu", derrno);
-				prep->payload.data[dns_key_error] = ERR_PTR(-derrno);
+				prep->type_data[0] = ERR_PTR(-derrno);
 				continue;
 			}
 
@@ -140,8 +140,8 @@ dns_resolver_preparse(struct key_preparsed_payload *prep)
 
 	/* don't cache the result if we're caching an error saying there's no
 	 * result */
-	if (prep->payload.data[dns_key_error]) {
-		kleave(" = 0 [h_error %ld]", PTR_ERR(prep->payload.data[dns_key_error]));
+	if (prep->type_data[0]) {
+		kleave(" = 0 [h_error %ld]", PTR_ERR(prep->type_data[0]));
 		return 0;
 	}
 
@@ -158,7 +158,7 @@ dns_resolver_preparse(struct key_preparsed_payload *prep)
 	memcpy(upayload->data, data, result_len);
 	upayload->data[result_len] = '\0';
 
-	prep->payload.data[dns_key_data] = upayload;
+	prep->payload[0] = upayload;
 	kleave(" = 0");
 	return 0;
 }
@@ -170,7 +170,7 @@ static void dns_resolver_free_preparse(struct key_preparsed_payload *prep)
 {
 	pr_devel("==>%s()\n", __func__);
 
-	kfree(prep->payload.data[dns_key_data]);
+	kfree(prep->payload[0]);
 }
 
 /*
@@ -226,10 +226,10 @@ static int dns_resolver_match_preparse(struct key_match_data *match_data)
  */
 static void dns_resolver_describe(const struct key *key, struct seq_file *m)
 {
-	seq_puts(m, key->description);
-	if (key_is_positive(key)) {
-		int err = PTR_ERR(key->payload.data[dns_key_error]);
+	int err = key->type_data.x[0];
 
+	seq_puts(m, key->description);
+	if (key_is_instantiated(key)) {
 		if (err)
 			seq_printf(m, ": %d", err);
 		else
@@ -244,10 +244,8 @@ static void dns_resolver_describe(const struct key *key, struct seq_file *m)
 static long dns_resolver_read(const struct key *key,
 			      char __user *buffer, size_t buflen)
 {
-	int err = PTR_ERR(key->payload.data[dns_key_error]);
-
-	if (err)
-		return err;
+	if (key->type_data.x[0])
+		return key->type_data.x[0];
 
 	return user_read(key, buffer, buflen);
 }
